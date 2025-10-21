@@ -45,15 +45,14 @@ DEVICE = torch.device("cpu")
 # Model Loading (user-provided)
 # -----------------------------
 @st.cache_resource
-
-@st.cache_resource
 def load_model():
-    """Load SimCLR backbone and classifier head, preferring updated version from GCS"""
+    """Load SimCLR backbone and the latest available classifier head from GCS."""
     set_seed(100)
     client, bucket = get_gcs_client()
 
-    # ---------- Utility to download file ----------
+    # ---------- Utility: Download file if missing ----------
     def download_if_needed(url, local_path):
+        """Download a file only if it doesn't exist locally."""
         if not os.path.exists(local_path):
             print(f"📥 Downloading {os.path.basename(local_path)} from {url} ...")
             r = requests.get(url)
@@ -65,27 +64,50 @@ def load_model():
                 raise RuntimeError(f"❌ Failed to download {url} (status {r.status_code})")
         return local_path
 
-    # ---------- Backbone ----------
+    # ---------- Helper: Find the latest fine-tuned model ----------
+    def get_latest_model_version(bucket):
+        """Search for the most recent classifier_head_v{N}.pth file in GCS."""
+        blobs = list(bucket.list_blobs(prefix="simCLR_endtoend/classifier_head_v"))
+        versions = []
+        for b in blobs:
+            name = os.path.basename(b.name)
+            if name.startswith("classifier_head_v") and name.endswith(".pth"):
+                try:
+                    num = int(name.replace("classifier_head_v", "").replace(".pth", ""))
+                    versions.append((num, b.name))
+                except ValueError:
+                    pass
+        if versions:
+            latest_blob = max(versions, key=lambda x: x[0])[1]
+            print(f"🔹 Found latest fine-tuned model: {latest_blob}")
+            return latest_blob
+        else:
+            print("⚪ No fine-tuned classifier found. Using original.")
+            return None
+
+    # ---------- Step 1: Load backbone ----------
     backbone_path = download_if_needed(
         "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/backbone_resnet18_simclr2.pth",
         os.path.join(tempfile.gettempdir(), "backbone_resnet18_simclr2.pth")
     )
 
-    # ---------- Classifier Head (check GCS first) ----------
-    blob = bucket.blob("simCLR_endtoend/classifier_head_updated.pth")
-    if blob.exists(client):
-        print("🔹 Found updated classifier on GCS — downloading...")
-        tmp_path = os.path.join(tempfile.gettempdir(), "classifier_head_updated.pth")
+    # ---------- Step 2: Load latest classifier head ----------
+    latest_head_blob = get_latest_model_version(bucket)
+    if latest_head_blob:
+        tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(latest_head_blob))
+        blob = bucket.blob(latest_head_blob)
         blob.download_to_filename(tmp_path)
         head_path = tmp_path
+        CURRENT_MODEL_VERSION = os.path.basename(latest_head_blob)
     else:
-        print("⚪ No updated classifier found. Using original head.")
+        # Fallback: original head
         head_path = download_if_needed(
             "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth",
             os.path.join(tempfile.gettempdir(), "classifier_head.pth")
         )
+        CURRENT_MODEL_VERSION = "classifier_head_original.pth"
 
-    # ---------- Load model ----------
+    # ---------- Step 3: Load model ----------
     backbone = torch.load(backbone_path, map_location=DEVICE, weights_only=False)
     backbone = nn.Sequential(backbone, nn.Flatten())
 
@@ -101,7 +123,7 @@ def load_model():
     model = nn.Sequential(backbone, classifier_head).to(DEVICE)
     model.eval()
 
-    # ---------- Transform ----------
+    # ---------- Step 4: Define preprocessing transform ----------
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -111,7 +133,8 @@ def load_model():
         )
     ])
 
-    return model, transform
+    print(f"✅ Loaded model version: {CURRENT_MODEL_VERSION}")
+    return model, transform, CURRENT_MODEL_VERSION
 
 def set_seed(seed=100):
     import random, numpy as np, torch
@@ -256,7 +279,7 @@ def fetch_all_feedback(con):
 # -----------------------------
 # Inference (with caching)
 # -----------------------------
-CURRENT_MODEL_VERSION = "classifier_head_updated.pth"  # global version tag (update after fine-tune)
+# global version tag (update after fine-tune)
 
 @torch.no_grad()
 def predict(model, transform, img_path, con=None):
