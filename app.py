@@ -30,7 +30,7 @@ client = storage.Client(credentials=credentials)
 bucket_name = st.secrets["gcp"]["bucket_name"]
 bucket = client.bucket(bucket_name)
 
-DB_PATH = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/feedback.db"      
+DB_PATH = os.path.join(tempfile.gettempdir(), "feedback.db")   
 CSV_PATH = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/final_results.csv"  
 
 FOLDER_SCAN = None               
@@ -45,15 +45,16 @@ DEVICE = torch.device("cpu")
 # -----------------------------
 @st.cache_resource
 
-
 @st.cache_resource
 def load_model():
+    """Load SimCLR backbone and classifier head, preferring updated version from GCS"""
     set_seed(100)
+    client, bucket = get_gcs_client()
 
-    # ---------- 1️⃣ Utility: download file if not exists ----------
+    # ---------- Utility to download file ----------
     def download_if_needed(url, local_path):
         if not os.path.exists(local_path):
-            print(f"📥 Downloading {os.path.basename(local_path)} from Google Cloud...")
+            print(f"📥 Downloading {os.path.basename(local_path)} from {url} ...")
             r = requests.get(url)
             if r.status_code == 200:
                 with open(local_path, "wb") as f:
@@ -63,28 +64,28 @@ def load_model():
                 raise RuntimeError(f"❌ Failed to download {url} (status {r.status_code})")
         return local_path
 
-    # ---------- 2️⃣ Download backbone model ----------
+    # ---------- Backbone ----------
     backbone_path = download_if_needed(
         "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/backbone_resnet18_simclr2.pth",
-        "backbone_resnet18_simclr2.pth"
+        os.path.join(tempfile.gettempdir(), "backbone_resnet18_simclr2.pth")
     )
 
-    updated_path_url = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head_updated.pth"
-    original_path_url = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth"
-
-    updated_local = "classifier_head_updated.pth"
-    original_local = "classifier_head.pth"
-
-    # ---------- 3️⃣ Choose which classifier head to load ----------
-    if requests.head(updated_path_url).status_code == 200:
-        head_path = download_if_needed(updated_path_url, updated_local)
-        print("🔹 Loading fine-tuned classifier head...")
+    # ---------- Classifier Head (check GCS first) ----------
+    blob = bucket.blob("simCLR_endtoend/classifier_head_updated.pth")
+    if blob.exists(client):
+        print("🔹 Found updated classifier on GCS — downloading...")
+        tmp_path = os.path.join(tempfile.gettempdir(), "classifier_head_updated.pth")
+        blob.download_to_filename(tmp_path)
+        head_path = tmp_path
     else:
-        head_path = download_if_needed(original_path_url, original_local)
-        print("⚪ Loading original classifier head...")
+        print("⚪ No updated classifier found. Using original head.")
+        head_path = download_if_needed(
+            "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth",
+            os.path.join(tempfile.gettempdir(), "classifier_head.pth")
+        )
 
-    # ---------- 4️⃣ Load model weights ----------
-    backbone = torch.load(backbone_path, map_location=DEVICE, weights_only=False)
+    # ---------- Load model ----------
+    backbone = torch.load(backbone_path, map_location=DEVICE)
     backbone = nn.Sequential(backbone, nn.Flatten())
 
     classifier_head = nn.Sequential(
@@ -99,7 +100,7 @@ def load_model():
     model = nn.Sequential(backbone, classifier_head).to(DEVICE)
     model.eval()
 
-    # ---------- 5️⃣ Define image transformation pipeline ----------
+    # ---------- Transform ----------
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -159,35 +160,35 @@ def get_gcs_client():
 
 
 def init_db():
-    """Download feedback.db from GCS (if exists), then connect locally"""
     client, bucket = get_gcs_client()
     blob = bucket.blob("simCLR_endtoend/feedback.db")
-
     tmp_path = os.path.join(tempfile.gettempdir(), "feedback.db")
 
-    # Download existing DB from GCS (if exists)
     if blob.exists(client):
         blob.download_to_filename(tmp_path)
         print("✅ Downloaded feedback.db from GCS.")
     else:
-        print("⚪ No feedback.db found in GCS. Creating a new one...")
+        print("⚪ No feedback.db found. Creating new and uploading...")
+        con = sqlite3.connect(tmp_path)
+        cur = con.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                img_path TEXT UNIQUE,
+                pred_label INTEGER,
+                pred_prob REAL,
+                is_correct INTEGER,
+                correct_label INTEGER,
+                user TEXT,
+                ts TEXT
+            )
+        """)
+        con.commit()
+        blob.upload_from_filename(tmp_path)
+        print("☁️ Uploaded new feedback.db to GCS.")
+        return con
 
-    con = sqlite3.connect(tmp_path)
-    cur = con.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            img_path TEXT UNIQUE,
-            pred_label INTEGER,
-            pred_prob REAL,
-            is_correct INTEGER,
-            correct_label INTEGER,
-            user TEXT,
-            ts TEXT
-        )
-    """)
-    con.commit()
-    return con
+    return sqlite3.connect(tmp_path)
 
 
 def upsert_feedback(con, img_path, pred_label, pred_prob, is_correct, correct_label, user="expert"):
@@ -354,7 +355,7 @@ def fine_tune_on_feedback(model, transform, con,
         bucket = storage_client.bucket(st.secrets["gcp"]["bucket_name"])
         blob = bucket.blob("simCLR_endtoend/classifier_head_updated.pth")
         blob.upload_from_filename(tmp_path)
-        print("☁️ Uploaded updated classifier to GCS successfully.")
+        print("☁️ Uploaded updated classifier to GCS (overwrite).")
     except Exception as e:
         print(f"⚠️ Upload to GCS failed: {e}")
         return f"⚠️ Fine-tuning done locally but upload failed ({e})"
@@ -397,8 +398,6 @@ if source_filter != "all" and "source" in df.columns:
     paths = df["path"].tolist()
 
 # ✅ Resume from last feedback per source_filter
-import os
-
 # Set state key by source type.
 filter_key = f"idx_{source_filter}"
 
