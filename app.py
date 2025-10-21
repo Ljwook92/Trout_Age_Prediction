@@ -86,7 +86,7 @@ def load_model():
         )
 
     # ---------- Load model ----------
-    backbone = torch.load(backbone_path, map_location=DEVICE)
+    backbone = torch.load(backbone_path, map_location=DEVICE, weights_only=False)
     backbone = nn.Sequential(backbone, nn.Flatten())
 
     classifier_head = nn.Sequential(
