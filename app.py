@@ -125,13 +125,13 @@ def set_seed(seed=100):
 # Data Source
 # -----------------------------
 def load_image_list():
-    if CSV_PATH.startswith("http"):  # ✅ URL 경로일 경우
+    if CSV_PATH.startswith("http"):  
         r = requests.get(CSV_PATH)
         if r.status_code != 200:
             st.error(f"Failed to fetch CSV file: {r.status_code}")
             return pd.DataFrame({"path": []}), []
         df = pd.read_csv(io.StringIO(r.text))
-    elif os.path.exists(CSV_PATH):  # ✅ 로컬 파일일 경우
+    elif os.path.exists(CSV_PATH):  
         df = pd.read_csv(CSV_PATH)
     else:
         st.error("CSV path does not exist.")
@@ -399,7 +399,7 @@ if "last_filter" not in st.session_state or st.session_state.last_filter != sour
     st.session_state.idx = 0
     st.session_state.last_filter = source_filter
 
-show_feedback_table = st.sidebar.checkbox("Show feedback table")
+#show_feedback_table = st.sidebar.checkbox("Show feedback table")
 
 # Load model/data/db
 model, transform = load_model()
@@ -463,7 +463,6 @@ left, right = st.columns([1, 1])
 
 with left:
     st.subheader("Image")
-    # 파일명만 표시 (예: cu1_30_06.png)
     st.text(os.path.basename(img_path))
     try:
         st.image(img_path)
@@ -564,16 +563,15 @@ with right:
             
 st.divider()
 
-# Optional table
-if show_feedback_table:
-    st.subheader("Saved Feedback")
-    fb = fetch_all_feedback(con)
+# Always show feedback table (no checkbox)
+st.subheader("Saved Feedback")
+fb = fetch_all_feedback(con)
 
-    fb["img_path"] = fb["img_path"].apply(
-        lambda x: f"{os.path.basename(os.path.dirname(str(x)))}/{os.path.basename(str(x))}"
-    )
+fb["img_path"] = fb["img_path"].apply(
+    lambda x: f"{os.path.basename(os.path.dirname(str(x)))}/{os.path.basename(str(x))}"
+)
 
-    st.dataframe(fb, use_container_width=True)
+st.dataframe(fb, use_container_width=True)
 
 # Export
 st.download_button(
