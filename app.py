@@ -401,6 +401,8 @@ if "last_filter" not in st.session_state or st.session_state.last_filter != sour
 
 #show_feedback_table = st.sidebar.checkbox("Show feedback table")
 
+st.sidebar.header("Dataset Details")
+
 # Load model/data/db
 model, transform = load_model()
 df, paths = load_image_list()
