@@ -422,7 +422,6 @@ st.sidebar.markdown(
     **Total Dataset:** 16,221  
     **Labeled Dataset:** 1,393  
     **Unlabeled Dataset:** 14,828  
-    ---
     """
 )
 
