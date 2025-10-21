@@ -17,6 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
+from sklearn.metrics import classification_report, accuracy_score, f1_score
 
 # -----------------------------
 # Config
@@ -304,7 +305,67 @@ def predict(model, transform, img_path, con=None):
     # 🔹 5. Return predicted label, probability, and error message (if any)
     return pred_label, pred_prob, None
     
-    
+
+# -----------------------------
+# Model Evaluation (with classifier_head_updated)
+# -----------------------------
+@torch.no_grad()
+def evaluate_model(model, transform, df, con=None, upload_to_gcs=True):
+    """
+    Evaluate current classifier_head_updated.pth model on labeled dataset.
+    Uses existing predict() for consistency.
+    Saves results to JSON and uploads to GCS.
+    """
+    # pick only labeled dataset
+    df_labeled = df[df["source"] == "labeled"].dropna(subset=["label"])
+    if df_labeled.empty:
+        return None, "No labeled data found for evaluation."
+
+    y_true, y_pred = [], []
+    skipped = 0
+
+    # Prediction
+    for _, row in df_labeled.iterrows():
+        img_path = row["path"]
+        true_label = int(row["label"])
+        pred_label, pred_prob, err = predict(model, transform, img_path, con=con)
+        if err:
+            skipped += 1
+            continue
+        y_true.append(true_label)
+        y_pred.append(pred_label)
+
+    # report table
+    acc = accuracy_score(y_true, y_pred)
+    macro_f1 = f1_score(y_true, y_pred, average="macro")
+    report = classification_report(y_true, y_pred, target_names=LABEL_NAMES, output_dict=True)
+
+    result = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "model_version": "classifier_head_updated.pth",
+        "total_samples": len(df_labeled),
+        "skipped": skipped,
+        "accuracy": acc,
+        "macro_f1": macro_f1,
+        "report": report
+    }
+
+    # save
+    if upload_to_gcs:
+        try:
+            tmp_path = os.path.join(tempfile.gettempdir(), "evaluation.json")
+            with open(tmp_path, "w") as f:
+                json.dump(result, f, indent=2)
+
+            client, bucket = get_gcs_client()
+            blob = bucket.blob("simCLR_endtoend/eval_logs/evaluation.json")
+            blob.upload_from_filename(tmp_path)
+            print("☁️ Uploaded evaluation.json to GCS.")
+        except Exception as e:
+            print(f"⚠️ Upload failed: {e}")
+
+    return result, None
+
 # -----------------------------
 # Online Fine-tuning Function
 # -----------------------------
@@ -621,7 +682,24 @@ with right:
             st.session_state[f"idx_{source_filter}"] = st.session_state.idx  
             st.rerun()
             
+# ----------------------------------------------------
+# 📊 Evaluate Fine-Tuned Model (labeled dataset only)
+# ----------------------------------------------------
 st.divider()
+st.subheader("🔍 Evaluate Fine-Tuned Model (Labeled Dataset)")
+
+if st.button("Run Evaluation"):
+    with st.spinner("Evaluating fine-tuned model on labeled data..."):
+        eval_result, err = evaluate_model(model, transform, df, con=con)
+        if err:
+            st.error(err)
+        else:
+            st.success(f"✅ Evaluation complete — Accuracy: {eval_result['accuracy']:.3f}, Macro F1: {eval_result['macro_f1']:.3f}")
+            st.dataframe(
+                pd.DataFrame(eval_result["report"]).transpose().round(3),
+                use_container_width=True
+            )
+            st.caption("☁️ Results uploaded to: `simCLR_endtoend/eval_logs/evaluation.json`")
 
 # Always show feedback table (no checkbox)
 st.subheader("Saved Feedback")
