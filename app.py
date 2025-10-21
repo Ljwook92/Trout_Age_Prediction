@@ -373,47 +373,50 @@ import tempfile
 from google.cloud import storage
 
 def fine_tune_on_feedback(model, transform, con,
+                          batch_trigger=20,
                           batch_size_gpu=8, batch_size_cpu=4,
                           lr_gpu=1e-4, lr_cpu=5e-4,
                           epoch_gpu=3, epoch_cpu=1):
     """
-    Fine-tune the classifier head using newly corrected feedback samples.
-    Automatically adjusts hyperparameters depending on GPU/CPU environment.
-    After fine-tuning, saves updated model weights and uploads them to GCS.
+    Fine-tune the classifier head every 'batch_trigger' incorrect feedbacks.
+    Uses *all accumulated feedbacks* up to that point for stability.
     """
     device = DEVICE
     df_fb = pd.read_sql_query(
         "SELECT img_path, correct_label FROM feedback WHERE is_correct=0 AND correct_label IS NOT NULL",
         con
     )
-    if len(df_fb) == 0:
-        return "🟡 No new incorrect feedback yet."
 
-    # Select hyperparameters based on environment
+    if len(df_fb) == 0:
+        return "🟡 No feedback data available yet."
+
+    # 🔹 Trigger fine-tuning only every batch_trigger samples
+    if len(df_fb) % batch_trigger != 0:
+        return f"⏸️ Waiting for more feedback... ({len(df_fb)}/{batch_trigger})"
+
+    # Select hyperparameters
     if device.type == "cuda":
         batch_size, lr, epochs = batch_size_gpu, lr_gpu, epoch_gpu
     else:
         batch_size, lr, epochs = batch_size_cpu, lr_cpu, epoch_cpu
 
-    # Use only the most recent batch of feedback samples
-    df_recent = df_fb.tail(batch_size)
-
+    # 🔹 Use all accumulated feedback (not just the last few)
+    df_used = df_fb.copy()
     x_list, y_list = [], []
-    for _, row in df_recent.iterrows():
+
+    for _, row in df_used.iterrows():
         try:
-            # Load image (from URL or local)
             if row["img_path"].startswith("http"):
                 r = requests.get(row["img_path"], stream=True)
                 r.raise_for_status()
                 img = Image.open(io.BytesIO(r.content)).convert("RGB")
             else:
                 img = Image.open(row["img_path"]).convert("RGB")
-
             x = transform(img)
             x_list.append(x)
             y_list.append(int(row["correct_label"]))
         except Exception as e:
-            print(f"⚠️ Skipped: {row['img_path']} ({e})")
+            print(f"⚠️ Skipped {row['img_path']}: {e}")
             continue
 
     if not x_list:
@@ -422,7 +425,6 @@ def fine_tune_on_feedback(model, transform, con,
     X = torch.stack(x_list).to(device)
     y = torch.tensor(y_list).to(device)
 
-    # Only update the classifier head
     classifier_head = model[-1]
     classifier_head.train()
 
@@ -430,30 +432,27 @@ def fine_tune_on_feedback(model, transform, con,
     criterion = nn.CrossEntropyLoss()
 
     for epoch in range(epochs):
-        optimizer.zero_grad()
-        logits = classifier_head(model[0](X))
-        loss = criterion(logits, y)
-        loss.backward()
-        optimizer.step()
+        for i in range(0, len(X), batch_size):
+            xb, yb = X[i:i+batch_size], y[i:i+batch_size]
+            optimizer.zero_grad()
+            logits = classifier_head(model[0](xb))
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
 
-    # ✅ Save updated classifier weights locally and upload to GCS
+    # ✅ Save updated weights
     try:
         with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as tmp:
+            torch.save(classifier_head.state_dict(), tmp.name)
             tmp_path = tmp.name
-            torch.save(classifier_head.state_dict(), tmp_path)
-            print(f"✅ Saved fine-tuned weights locally: {tmp_path}")
-
-        # Initialize GCS client and upload
         storage_client = storage.Client.from_service_account_info(creds_dict)
         bucket = storage_client.bucket(st.secrets["gcp"]["bucket_name"])
         blob = bucket.blob("simCLR_endtoend/classifier_head_updated.pth")
         blob.upload_from_filename(tmp_path)
-        print("☁️ Uploaded updated classifier to GCS (overwrite).")
+        print("☁️ Uploaded fine-tuned weights to GCS.")
+        return f"✅ Fine-tuned on {len(df_used)} samples ({epochs} epochs)."
     except Exception as e:
-        print(f"⚠️ Upload to GCS failed: {e}")
-        return f"⚠️ Fine-tuning done locally but upload failed ({e})"
-
-    return f"✅ Fine-tuned on {len(df_recent)} samples ({epochs} epoch{'s' if epochs>1 else ''}, lr={lr}, device={device.type}) and uploaded to GCS."
+        return f"⚠️ Fine-tuning done locally but upload failed: {e}"
 
 # -----------------------------
 # Streamlit UI
@@ -654,7 +653,7 @@ with right:
         if st.button("✅ Save & Next"):
             is_correct = 1 if choice == "Correct" else 0
             final_correct = None if is_correct == 1 else int(correct_label)
-
+            
             if (is_correct == 0) and (final_correct is None):
                 st.warning("Please choose a correct label when marking as Incorrect.")
             else:
@@ -667,10 +666,22 @@ with right:
                     correct_label=final_correct,
                     user=user_name
                 )
-                st.success("Saved.")
-                msg = fine_tune_on_feedback(model, transform, con)
-                st.caption(msg)
+                st.success("Saved feedback.")
+
                 
+                # 🔹 Fetch current incorrect count
+                cur = con.cursor()
+                cur.execute("SELECT COUNT(*) FROM feedback WHERE is_correct=0 AND correct_label IS NOT NULL")
+                feedback_count = cur.fetchone()[0]
+
+                # 🔹 Fine-tune only when count hits multiple of 20
+                if feedback_count % 20 == 0 and feedback_count > 0:
+                    st.info(f"🧠 Fine-tuning triggered automatically (feedbacks: {feedback_count})")
+                    msg = fine_tune_on_feedback(model, transform, con)
+                    st.caption(msg)
+                else:
+                    st.caption(f"Waiting for next fine-tuning... ({feedback_count % 20}/20 accumulated)")
+
                 time.sleep(0.1)
                 st.session_state.idx = min(len(paths)-1, st.session_state.idx + 1)
                 st.session_state[f"idx_{source_filter}"] = st.session_state.idx
