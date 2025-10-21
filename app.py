@@ -388,12 +388,9 @@ st.caption("Human-in-the-loop QA for model predictions.")
 st.sidebar.header("Settings")
 user_name = st.sidebar.text_input("User (optional)", value="expert")
 
-source_filter = st.sidebar.selectbox(
-    "Select data source",
-    options=["all", "labeled", "unlabeled"],
-    index=0,
-    format_func=lambda x: x.capitalize()
-)
+# Force 'unlabeled' mode (no sidebar select)
+source_filter = "unlabeled"
+st.sidebar.info("Data source fixed to 'unlabeled'")
 
 if "last_filter" not in st.session_state or st.session_state.last_filter != source_filter:
     st.session_state.idx = 0
