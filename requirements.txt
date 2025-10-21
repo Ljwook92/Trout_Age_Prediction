@@ -9,3 +9,4 @@ torch
 torchvision
 Pillow
 requests
+scikit-learn==1.5.2
