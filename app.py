@@ -275,13 +275,17 @@ def predict(model, transform, img_path, con=None):
 # -----------------------------
 # Online Fine-tuning Function
 # -----------------------------
+import tempfile
+from google.cloud import storage
+
 def fine_tune_on_feedback(model, transform, con,
                           batch_size_gpu=8, batch_size_cpu=4,
                           lr_gpu=1e-4, lr_cpu=5e-4,
                           epoch_gpu=3, epoch_cpu=1):
     """
-    Fine-tune classifier head when new incorrect feedback accumulates.
-    Automatically adjust hyperparameters based on GPU/CPU environment.
+    Fine-tune the classifier head using newly corrected feedback samples.
+    Automatically adjusts hyperparameters depending on GPU/CPU environment.
+    After fine-tuning, saves updated model weights and uploads them to GCS.
     """
     device = DEVICE
     df_fb = pd.read_sql_query(
@@ -291,22 +295,31 @@ def fine_tune_on_feedback(model, transform, con,
     if len(df_fb) == 0:
         return "🟡 No new incorrect feedback yet."
 
-    # Use only the most recent feedback (limit by batch size).
+    # Select hyperparameters based on environment
     if device.type == "cuda":
         batch_size, lr, epochs = batch_size_gpu, lr_gpu, epoch_gpu
     else:
         batch_size, lr, epochs = batch_size_cpu, lr_cpu, epoch_cpu
 
+    # Use only the most recent batch of feedback samples
     df_recent = df_fb.tail(batch_size)
 
     x_list, y_list = [], []
     for _, row in df_recent.iterrows():
         try:
-            img = Image.open(row["img_path"]).convert("RGB")
+            # Load image (from URL or local)
+            if row["img_path"].startswith("http"):
+                r = requests.get(row["img_path"], stream=True)
+                r.raise_for_status()
+                img = Image.open(io.BytesIO(r.content)).convert("RGB")
+            else:
+                img = Image.open(row["img_path"]).convert("RGB")
+
             x = transform(img)
             x_list.append(x)
             y_list.append(int(row["correct_label"]))
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Skipped: {row['img_path']} ({e})")
             continue
 
     if not x_list:
@@ -315,7 +328,7 @@ def fine_tune_on_feedback(model, transform, con,
     X = torch.stack(x_list).to(device)
     y = torch.tensor(y_list).to(device)
 
-    # only classifier head update
+    # Only update the classifier head
     classifier_head = model[-1]
     classifier_head.train()
 
@@ -329,13 +342,24 @@ def fine_tune_on_feedback(model, transform, con,
         loss.backward()
         optimizer.step()
 
-    # Save the updated weights.
-    torch.save(
-        classifier_head.state_dict(),
-        "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head_updated.pth"
-    )
+    # ✅ Save updated classifier weights locally and upload to GCS
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as tmp:
+            tmp_path = tmp.name
+            torch.save(classifier_head.state_dict(), tmp_path)
+            print(f"✅ Saved fine-tuned weights locally: {tmp_path}")
 
-    return f"✅ Fine-tuned on {len(df_recent)} samples ({epochs} epoch{'s' if epochs>1 else ''}, lr={lr}, device={device.type})"
+        # Initialize GCS client and upload
+        storage_client = storage.Client.from_service_account_info(creds_dict)
+        bucket = storage_client.bucket(st.secrets["gcp"]["bucket_name"])
+        blob = bucket.blob("simCLR_endtoend/classifier_head_updated.pth")
+        blob.upload_from_filename(tmp_path)
+        print("☁️ Uploaded updated classifier to GCS successfully.")
+    except Exception as e:
+        print(f"⚠️ Upload to GCS failed: {e}")
+        return f"⚠️ Fine-tuning done locally but upload failed ({e})"
+
+    return f"✅ Fine-tuned on {len(df_recent)} samples ({epochs} epoch{'s' if epochs>1 else ''}, lr={lr}, device={device.type}) and uploaded to GCS."
 
 # -----------------------------
 # Streamlit UI
