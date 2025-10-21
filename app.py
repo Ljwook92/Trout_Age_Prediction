@@ -466,7 +466,10 @@ df_compare = pd.DataFrame({
 
 # 🔹 Streamlit 표시
 st.sidebar.subheader("📊 Model Comparison")
-st.sidebar.dataframe(df_compare.style.format("{:.3f}"), use_container_width=True)
+st.sidebar.dataframe(
+    df_compare.style.format(subset=["Original", selected_eval["version"]], formatter="{:.3f}"),
+    use_container_width=True
+)
 
 # Load model/data/db
 model, transform = load_model()
