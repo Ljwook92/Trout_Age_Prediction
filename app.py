@@ -569,6 +569,22 @@ model, transform = load_model()
 df, paths = load_image_list()
 con = init_db()
 
+# Ensure model_version column exists (for version-aware cache)
+def ensure_model_version_column(con):
+    """Ensure model_version column exists in feedback table."""
+    cur = con.cursor()
+    cur.execute("PRAGMA table_info(feedback);")
+    cols = [row[1] for row in cur.fetchall()]
+    if "model_version" not in cols:
+        cur.execute("ALTER TABLE feedback ADD COLUMN model_version TEXT;")
+        con.commit()
+        print("✅ Added 'model_version' column to feedback table.")
+    else:
+        print("ℹ️ 'model_version' column already exists.")
+
+# ✅ Add this line
+ensure_model_version_column(con)
+
 # 🔹 Apply filter
 if source_filter != "all" and "source" in df.columns:
     df = df[df["source"].str.lower() == source_filter.lower()].reset_index(drop=True)
