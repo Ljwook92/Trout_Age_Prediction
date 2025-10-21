@@ -426,15 +426,6 @@ st.sidebar.markdown(
     """
 )
 
-st.sidebar.subheader("📊 Original Model (Baseline)")
-st.sidebar.markdown(
-    f"""
-    **Accuracy:** {baseline["accuracy"]:.3f}  
-    **Macro F1:** {baseline["macro_f1"]:.3f}  
-    **0+ F1:** {baseline["per_class"]["0"]["f1"]:.3f}  
-    """
-)
-
 import pandas as pd
 
 # Evaluation Example
