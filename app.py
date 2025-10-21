@@ -256,25 +256,39 @@ def fetch_all_feedback(con):
 # -----------------------------
 # Inference (with caching)
 # -----------------------------
+CURRENT_MODEL_VERSION = "classifier_head_updated.pth"  # global version tag (update after fine-tune)
+
 @torch.no_grad()
 def predict(model, transform, img_path, con=None):
-    # 🔹 1. Check cache in the database
+    """
+    Predict label and probability for an image.
+    Uses database cache only if the stored model_version matches the current one.
+    """
+
+    # 🔹 1. Check cache in the database (with version check)
     if con is not None:
         cur = con.cursor()
-        cur.execute("SELECT pred_label, pred_prob FROM feedback WHERE img_path = ?", (img_path,))
+        cur.execute("""
+            SELECT pred_label, pred_prob, model_version 
+            FROM feedback 
+            WHERE img_path = ?
+        """, (img_path,))
         row = cur.fetchone()
-        if row and row[0] is not None:
+
+        if row and row[0] is not None and row[2] == CURRENT_MODEL_VERSION:
+            # ✅ Cache valid (same model version)
             return int(row[0]), float(row[1]), None
+        # ⚠️ Cache exists but outdated (different model version)
+        elif row and row[2] != CURRENT_MODEL_VERSION:
+            print(f"🔄 Recomputing prediction for {os.path.basename(img_path)} (model updated).")
 
     # 🔹 2. Load image (from URL or local path)
     try:
         if img_path.startswith("http"):
-            # If the path is a URL → fetch the image using requests
             r = requests.get(img_path, stream=True)
             r.raise_for_status()
             img = Image.open(io.BytesIO(r.content)).convert("RGB")
         else:
-            # If the path is local → open directly
             img = Image.open(img_path).convert("RGB")
     except Exception as e:
         return None, None, f"Image open error: {e}"
@@ -288,21 +302,22 @@ def predict(model, transform, img_path, con=None):
     pred_label = pred_idx.item()
     pred_prob = float(prob_vals.item())
 
-    # 🔹 4. Save prediction results to DB cache (if not already stored)
+    # 🔹 4. Save prediction results to DB cache (with current model version)
     if con is not None:
         try:
             cur.execute("""
-                INSERT INTO feedback (img_path, pred_label, pred_prob, is_correct, correct_label, user, ts)
-                VALUES (?, ?, ?, NULL, NULL, '', datetime('now'))
+                INSERT INTO feedback (img_path, pred_label, pred_prob, is_correct, correct_label, user, ts, model_version)
+                VALUES (?, ?, ?, NULL, NULL, '', datetime('now'), ?)
                 ON CONFLICT(img_path) DO UPDATE SET
                     pred_label=excluded.pred_label,
-                    pred_prob=excluded.pred_prob
-            """, (img_path, pred_label, pred_prob))
+                    pred_prob=excluded.pred_prob,
+                    model_version=excluded.model_version
+            """, (img_path, pred_label, pred_prob, CURRENT_MODEL_VERSION))
             con.commit()
         except Exception as e:
             print(f"[Cache insert warning] {e}")
 
-    # 🔹 5. Return predicted label, probability, and error message (if any)
+    # 🔹 5. Return prediction result
     return pred_label, pred_prob, None
     
 
