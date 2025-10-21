@@ -628,7 +628,7 @@ st.sidebar.dataframe(
 )
 
 # Load model/data/db
-model, transform = load_model()
+model, transform, CURRENT_MODEL_VERSION = load_model()
 df, paths = load_image_list()
 con = init_db()
 
