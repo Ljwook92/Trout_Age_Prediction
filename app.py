@@ -16,8 +16,9 @@ from torchvision import transforms
 # Config
 # -----------------------------
 
-DB_PATH = "/Users/lee/Library/CloudStorage/OneDrive-UniversityofMissouri/fish/simCLR_endtoend/feedback.db"
-CSV_PATH = "/Users/lee/Library/CloudStorage/OneDrive-UniversityofMissouri/fish/simCLR_endtoend/final_results.csv"       
+DB_PATH = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/feedback.db"      
+CSV_PATH = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/final_results.csv"  
+
 FOLDER_SCAN = None               
 NUM_CLASSES = 7
 LABEL_NAMES = ["0+", "1+", "2+", "3+", "4+", "5+", "Bad"]
@@ -34,7 +35,7 @@ def load_model():
     set_seed(100)
 
     backbone = torch.load(
-        "/Users/lee/Library/CloudStorage/OneDrive-UniversityofMissouri/fish/simCLR_endtoend/backbone_resnet18_simclr2.pth",
+        "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/backbone_resnet18_simclr2.pth",
         map_location=DEVICE, weights_only=False
     )
     backbone = nn.Sequential(backbone, nn.Flatten())
@@ -45,8 +46,8 @@ def load_model():
         nn.Linear(128, NUM_CLASSES)
     ).to(DEVICE)
 
-    updated_path = "/Users/lee/Library/CloudStorage/OneDrive-UniversityofMissouri/fish/simCLR_endtoend/classifier_head_updated.pth"
-    original_path = "/Users/lee/Library/CloudStorage/OneDrive-UniversityofMissouri/fish/simCLR_endtoend/classifier_head.pth"
+    updated_path = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head_updated.pth"
+    original_path = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth"
     if os.path.exists(updated_path):
     	print("🔹 Loading fine-tuned classifier head...")
     	state_dict = torch.load(updated_path, map_location=DEVICE)
@@ -193,7 +194,7 @@ def predict(model, transform, img_path, con=None):
 def fine_tune_on_feedback(model, transform, con,
                           batch_size_gpu=8, batch_size_cpu=4,
                           lr_gpu=1e-4, lr_cpu=5e-4,
-                          epoch_gpu=3, epoch_cpu=2):
+                          epoch_gpu=3, epoch_cpu=1):
     """
     Fine-tune classifier head when new incorrect feedback accumulates.
     Automatically adjust hyperparameters based on GPU/CPU environment.
@@ -247,7 +248,7 @@ def fine_tune_on_feedback(model, transform, con,
     # Save the updated weights.
     torch.save(
         classifier_head.state_dict(),
-        "/Users/lee/Library/CloudStorage/OneDrive-UniversityofMissouri/fish/simCLR_endtoend/classifier_head_updated.pth"
+        "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head_updated.pth"
     )
 
     return f"✅ Fine-tuned on {len(df_recent)} samples ({epochs} epoch{'s' if epochs>1 else ''}, lr={lr}, device={device.type})"
