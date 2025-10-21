@@ -2,6 +2,7 @@ import os
 import io
 import time
 import sqlite3
+import requests
 from datetime import datetime
 
 import streamlit as st
@@ -30,7 +31,7 @@ DEVICE = torch.device("cpu")
 # Model Loading (user-provided)
 # -----------------------------
 @st.cache_resource
-import requests
+
 
 @st.cache_resource
 def load_model():
