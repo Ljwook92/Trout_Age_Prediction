@@ -435,6 +435,39 @@ st.sidebar.markdown(
     """
 )
 
+import pandas as pd
+
+# Evaluation 결과 예시 (선택된 Evaluation 값으로 나중에 업데이트됨)
+selected_eval = {
+    "version": "Evaluation_V1",
+    "accuracy": 0.88,
+    "macro_f1": 0.63,
+    "per_class": {
+        "0": {"f1": 0.91},
+        "1": {"f1": 0.87},
+        "2": {"f1": 0.59},
+        "3": {"f1": 0.43},
+        "4": {"f1": 0.27},
+        "5": {"f1": 0.34},
+        "6": {"f1": 0.97}
+    }
+}
+
+# 🔹 비교용 테이블 생성
+metrics = ["Accuracy", "Macro F1"] + [f"{i}+" for i in range(7)]
+baseline_vals = [baseline["accuracy"], baseline["macro_f1"]] + [baseline["per_class"][str(i)]["f1"] for i in range(7)]
+eval_vals = [selected_eval["accuracy"], selected_eval["macro_f1"]] + [selected_eval["per_class"][str(i)]["f1"] for i in range(7)]
+
+df_compare = pd.DataFrame({
+    "Metric": metrics,
+    "Original": baseline_vals,
+    selected_eval["version"]: eval_vals
+})
+
+# 🔹 Streamlit 표시
+st.sidebar.subheader("📊 Model Comparison")
+st.sidebar.dataframe(df_compare.style.format("{:.3f}"), use_container_width=True)
+
 # Load model/data/db
 model, transform = load_model()
 df, paths = load_image_list()
