@@ -147,6 +147,24 @@ def load_image_list():
     return df, paths
 
 # -----------------------------
+# Baseline (Original Model Results)
+# -----------------------------
+baseline = {
+    "model_version": "classifier_head_original.pth",
+    "accuracy": 0.86,
+    "macro_f1": 0.60,
+    "per_class": {
+        "0": {"f1": 0.88},
+        "1": {"f1": 0.86},
+        "2": {"f1": 0.56},
+        "3": {"f1": 0.40},
+        "4": {"f1": 0.20},
+        "5": {"f1": 0.33},
+        "6": {"f1": 0.96}
+    }
+}
+
+# -----------------------------
 # SQLite
 # -----------------------------
 
@@ -404,6 +422,16 @@ st.sidebar.markdown(
     **Total Dataset:** 16,221  
     **Labeled Dataset:** 1,393  
     **Unlabeled Dataset:** 14,828  
+    ---
+    """
+)
+
+st.sidebar.subheader("📊 Original Model (Baseline)")
+st.sidebar.markdown(
+    f"""
+    **Accuracy:** {baseline["accuracy"]:.3f}  
+    **Macro F1:** {baseline["macro_f1"]:.3f}  
+    **0+ F1:** {baseline["per_class"]["0"]["f1"]:.3f}  
     """
 )
 
