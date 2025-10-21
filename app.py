@@ -5,6 +5,11 @@ import sqlite3
 import requests
 from datetime import datetime
 
+from google.cloud import storage
+from google.oauth2 import service_account
+import json
+import tempfile
+
 import streamlit as st
 import pandas as pd
 import torch
@@ -16,6 +21,14 @@ from torchvision import transforms
 # -----------------------------
 # Config
 # -----------------------------
+
+# Load from Streamlit secrets
+creds_dict = json.loads(st.secrets["gcp"]["credentials"])
+credentials = service_account.Credentials.from_service_account_info(creds_dict)
+
+client = storage.Client(credentials=credentials)
+bucket_name = st.secrets["gcp"]["bucket_name"]
+bucket = client.bucket(bucket_name)
 
 DB_PATH = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/feedback.db"      
 CSV_PATH = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/final_results.csv"  
@@ -134,8 +147,31 @@ def load_image_list():
 # -----------------------------
 # SQLite
 # -----------------------------
+
+def get_gcs_client():
+    """Load credentials from Streamlit secrets and return GCS client + bucket"""
+    creds_dict = json.loads(st.secrets["gcp"]["credentials"])
+    credentials = service_account.Credentials.from_service_account_info(creds_dict)
+    client = storage.Client(credentials=credentials)
+    bucket = client.bucket(st.secrets["gcp"]["bucket_name"])
+    return client, bucket
+
+
 def init_db():
-    con = sqlite3.connect(DB_PATH)
+    """Download feedback.db from GCS (if exists), then connect locally"""
+    client, bucket = get_gcs_client()
+    blob = bucket.blob("simCLR_endtoend/feedback.db")
+
+    tmp_path = os.path.join(tempfile.gettempdir(), "feedback.db")
+
+    # Download existing DB from GCS (if exists)
+    if blob.exists(client):
+        blob.download_to_filename(tmp_path)
+        print("✅ Downloaded feedback.db from GCS.")
+    else:
+        print("⚪ No feedback.db found in GCS. Creating a new one...")
+
+    con = sqlite3.connect(tmp_path)
     cur = con.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS feedback (
@@ -152,7 +188,9 @@ def init_db():
     con.commit()
     return con
 
+
 def upsert_feedback(con, img_path, pred_label, pred_prob, is_correct, correct_label, user="expert"):
+    """Insert or update a record, then sync the DB back to GCS"""
     cur = con.cursor()
     ts = datetime.now().isoformat(timespec="seconds")
     cur.execute("""
@@ -168,7 +206,16 @@ def upsert_feedback(con, img_path, pred_label, pred_prob, is_correct, correct_la
     """, (img_path, pred_label, pred_prob, is_correct, correct_label, user, ts))
     con.commit()
 
+    # Upload updated DB to GCS
+    client, bucket = get_gcs_client()
+    blob = bucket.blob("simCLR_endtoend/feedback.db")
+    tmp_path = con.execute("PRAGMA database_list").fetchone()[2]
+    blob.upload_from_filename(tmp_path)
+    print("☁️ Uploaded updated feedback.db to GCS.")
+
+
 def fetch_all_feedback(con):
+    """Read all feedback records"""
     return pd.read_sql_query("SELECT * FROM feedback ORDER BY id DESC", con)
 
 # -----------------------------
