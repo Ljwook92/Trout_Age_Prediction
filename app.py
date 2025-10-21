@@ -376,34 +376,53 @@ def fine_tune_on_feedback(model, transform, con,
                           batch_trigger=20,
                           batch_size_gpu=8, batch_size_cpu=4,
                           lr_gpu=1e-4, lr_cpu=5e-4,
-                          epoch_gpu=3, epoch_cpu=1):
+                          epoch_gpu=3, epoch_cpu=1,
+                          mix_correct_ratio=0.2):
     """
     Fine-tune the classifier head every 'batch_trigger' incorrect feedbacks.
+    Mixes in 20% of correct samples to prevent forgetting.
     Uses *all accumulated feedbacks* up to that point for stability.
     """
+
     device = DEVICE
-    df_fb = pd.read_sql_query(
+
+    # 1️⃣ Load incorrect feedback samples
+    df_incorrect = pd.read_sql_query(
         "SELECT img_path, correct_label FROM feedback WHERE is_correct=0 AND correct_label IS NOT NULL",
         con
     )
 
-    if len(df_fb) == 0:
+    # 2️⃣ Load correct feedback samples (for mix-in)
+    df_correct = pd.read_sql_query(
+        "SELECT img_path, correct_label FROM feedback WHERE is_correct=1 AND correct_label IS NOT NULL",
+        con
+    )
+
+    # 3️⃣ No incorrect feedbacks yet
+    if len(df_incorrect) == 0:
         return "🟡 No feedback data available yet."
 
-    # 🔹 Trigger fine-tuning only every batch_trigger samples
-    if len(df_fb) % batch_trigger != 0:
-        return f"⏸️ Waiting for more feedback... ({len(df_fb)}/{batch_trigger})"
+    # 4️⃣ Trigger fine-tuning only every 'batch_trigger' incorrect samples
+    if len(df_incorrect) % batch_trigger != 0:
+        return f"⏸️ Waiting for more feedback... ({len(df_incorrect)}/{batch_trigger})"
 
-    # Select hyperparameters
+    # 5️⃣ Determine hyperparameters based on device type
     if device.type == "cuda":
         batch_size, lr, epochs = batch_size_gpu, lr_gpu, epoch_gpu
     else:
         batch_size, lr, epochs = batch_size_cpu, lr_cpu, epoch_cpu
 
-    # 🔹 Use all accumulated feedback (not just the last few)
-    df_used = df_fb.copy()
-    x_list, y_list = [], []
+    # 6️⃣ Randomly sample a subset (e.g., 20%) of correct samples
+    n_correct_sample = int(len(df_incorrect) * mix_correct_ratio)
+    df_correct_sampled = df_correct.sample(n=min(len(df_correct), n_correct_sample), random_state=42) \
+                        if len(df_correct) > 0 else pd.DataFrame(columns=df_correct.columns)
 
+    # 7️⃣ Combine incorrect + sampled correct samples
+    df_used = pd.concat([df_incorrect, df_correct_sampled], ignore_index=True)
+    print(f"🧩 Fine-tuning on {len(df_used)} samples ({len(df_incorrect)} incorrect + {len(df_correct_sampled)} correct)")
+
+    # 8️⃣ Prepare tensors for training
+    x_list, y_list = [], []
     for _, row in df_used.iterrows():
         try:
             if row["img_path"].startswith("http"):
@@ -412,6 +431,7 @@ def fine_tune_on_feedback(model, transform, con,
                 img = Image.open(io.BytesIO(r.content)).convert("RGB")
             else:
                 img = Image.open(row["img_path"]).convert("RGB")
+
             x = transform(img)
             x_list.append(x)
             y_list.append(int(row["correct_label"]))
@@ -425,13 +445,16 @@ def fine_tune_on_feedback(model, transform, con,
     X = torch.stack(x_list).to(device)
     y = torch.tensor(y_list).to(device)
 
+    # 9️⃣ Fine-tune only the classifier head
     classifier_head = model[-1]
     classifier_head.train()
 
     optimizer = torch.optim.Adam(classifier_head.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
+    # 🔟 Training loop
     for epoch in range(epochs):
+        total_loss = 0
         for i in range(0, len(X), batch_size):
             xb, yb = X[i:i+batch_size], y[i:i+batch_size]
             optimizer.zero_grad()
@@ -439,18 +462,23 @@ def fine_tune_on_feedback(model, transform, con,
             loss = criterion(logits, yb)
             loss.backward()
             optimizer.step()
+            total_loss += loss.item()
+        print(f"Epoch {epoch+1}/{epochs} — Avg Loss: {total_loss / len(X):.4f}")
 
-    # ✅ Save updated weights
+    # 11️⃣ Save updated weights to GCS
     try:
         with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as tmp:
             torch.save(classifier_head.state_dict(), tmp.name)
             tmp_path = tmp.name
+
         storage_client = storage.Client.from_service_account_info(creds_dict)
         bucket = storage_client.bucket(st.secrets["gcp"]["bucket_name"])
         blob = bucket.blob("simCLR_endtoend/classifier_head_updated.pth")
         blob.upload_from_filename(tmp_path)
+
         print("☁️ Uploaded fine-tuned weights to GCS.")
-        return f"✅ Fine-tuned on {len(df_used)} samples ({epochs} epochs)."
+        return f"✅ Fine-tuned on {len(df_used)} samples ({len(df_incorrect)} incorrect + {len(df_correct_sampled)} correct)."
+
     except Exception as e:
         return f"⚠️ Fine-tuning done locally but upload failed: {e}"
 
