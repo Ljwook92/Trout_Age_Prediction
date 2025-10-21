@@ -690,7 +690,9 @@ st.subheader("🔍 Evaluate Fine-Tuned Model (Labeled Dataset)")
 
 if st.button("Run Evaluation"):
     with st.spinner("Evaluating fine-tuned model on labeled data..."):
-        eval_result, err = evaluate_model(model, transform, df, con=con)
+        df_full, _ = load_image_list()
+        eval_result, err = evaluate_model(model, transform, df_full, con=con)
+        
         if err:
             st.error(err)
         else:
