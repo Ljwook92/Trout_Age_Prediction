@@ -160,15 +160,26 @@ def get_gcs_client():
 
 
 def init_db():
+    """Initialize feedback database.
+    - If feedback.db exists in GCS → download it.
+    - If not, remove any cached local DB, create a new one, and upload it to GCS.
+    """
     client, bucket = get_gcs_client()
     blob = bucket.blob("simCLR_endtoend/feedback.db")
     tmp_path = os.path.join(tempfile.gettempdir(), "feedback.db")
 
+    # ✅ Case 1: If GCS DB exists → download and use it
     if blob.exists(client):
         blob.download_to_filename(tmp_path)
         print("✅ Downloaded feedback.db from GCS.")
+
+    # ⚪ Case 2: If not found in GCS → reset local cache and create new DB
     else:
-        print("⚪ No feedback.db found. Creating new and uploading...")
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            print("🗑️ Deleted old local feedback.db cache.")
+
+        print("⚪ No feedback.db found in GCS. Creating new one...")
         con = sqlite3.connect(tmp_path)
         cur = con.cursor()
         cur.execute("""
@@ -184,10 +195,13 @@ def init_db():
             )
         """)
         con.commit()
+
+        # ✅ Upload new empty DB to GCS immediately
         blob.upload_from_filename(tmp_path)
         print("☁️ Uploaded new feedback.db to GCS.")
         return con
 
+    # ✅ Return SQLite connection to downloaded DB
     return sqlite3.connect(tmp_path)
 
 
