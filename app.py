@@ -224,22 +224,28 @@ def fetch_all_feedback(con):
 # -----------------------------
 @torch.no_grad()
 def predict(model, transform, img_path, con=None):
-
-    # 🔹 1. Check DB cash
+    # 🔹 1. Check cache in the database
     if con is not None:
         cur = con.cursor()
         cur.execute("SELECT pred_label, pred_prob FROM feedback WHERE img_path = ?", (img_path,))
         row = cur.fetchone()
         if row and row[0] is not None:
-            # Already predicted result exists → return from cache
             return int(row[0]), float(row[1]), None
 
-    # 🔹 2. conduct new inference 
+    # 🔹 2. Load image (from URL or local path)
     try:
-        img = Image.open(img_path).convert("RGB")
+        if img_path.startswith("http"):
+            # If the path is a URL → fetch the image using requests
+            r = requests.get(img_path, stream=True)
+            r.raise_for_status()
+            img = Image.open(io.BytesIO(r.content)).convert("RGB")
+        else:
+            # If the path is local → open directly
+            img = Image.open(img_path).convert("RGB")
     except Exception as e:
         return None, None, f"Image open error: {e}"
 
+    # 🔹 3. Perform inference
     x = transform(img).unsqueeze(0).to(DEVICE)
     logits = model(x)
     probs = F.softmax(logits, dim=1)
@@ -248,7 +254,7 @@ def predict(model, transform, img_path, con=None):
     pred_label = pred_idx.item()
     pred_prob = float(prob_vals.item())
 
-    # 🔹 3. Cache the result in the database (only if no existing label is present)
+    # 🔹 4. Save prediction results to DB cache (if not already stored)
     if con is not None:
         try:
             cur.execute("""
@@ -262,6 +268,7 @@ def predict(model, transform, img_path, con=None):
         except Exception as e:
             print(f"[Cache insert warning] {e}")
 
+    # 🔹 5. Return predicted label, probability, and error message (if any)
     return pred_label, pred_prob, None
     
     
