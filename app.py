@@ -124,24 +124,25 @@ def set_seed(seed=100):
 # Data Source
 # -----------------------------
 def load_image_list():
-    if os.path.exists(CSV_PATH):
+    if CSV_PATH.startswith("http"):  # ✅ URL 경로일 경우
+        r = requests.get(CSV_PATH)
+        if r.status_code != 200:
+            st.error(f"Failed to fetch CSV file: {r.status_code}")
+            return pd.DataFrame({"path": []}), []
+        df = pd.read_csv(io.StringIO(r.text))
+    elif os.path.exists(CSV_PATH):  # ✅ 로컬 파일일 경우
         df = pd.read_csv(CSV_PATH)
-        assert "path" in df.columns, "CSV must have a 'path' column."
-        df = df.dropna(subset=["path"]).reset_index(drop=True)
-        paths = df["path"].tolist()
-    elif FOLDER_SCAN and os.path.isdir(FOLDER_SCAN):
-        exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-        paths = []
-        for root, _, files in os.walk(FOLDER_SCAN):
-            for f in files:
-                if os.path.splitext(f)[1].lower() in exts:
-                    paths.append(os.path.join(root, f))
-        paths.sort()
-        df = pd.DataFrame({"path": paths})
     else:
-        df = pd.DataFrame({"path": []})
-        paths = []
+        st.error("CSV path does not exist.")
+        return pd.DataFrame({"path": []}), []
 
+    # 기본 구조 확인
+    if "path" not in df.columns:
+        st.error("CSV must include a 'path' column.")
+        return pd.DataFrame({"path": []}), []
+
+    df = df.dropna(subset=["path"]).reset_index(drop=True)
+    paths = df["path"].tolist()
     return df, paths
 
 # -----------------------------
