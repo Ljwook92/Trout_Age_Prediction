@@ -437,9 +437,9 @@ st.sidebar.markdown(
 
 import pandas as pd
 
-# Evaluation 결과 예시 (선택된 Evaluation 값으로 나중에 업데이트됨)
+# Evaluation Example
 selected_eval = {
-    "version": "Evaluation_V1",
+    "version": "Eval_V1",
     "accuracy": 0.88,
     "macro_f1": 0.63,
     "per_class": {
@@ -453,7 +453,7 @@ selected_eval = {
     }
 }
 
-# 🔹 비교용 테이블 생성
+# create comparison table
 metrics = ["Accuracy", "Macro F1"] + [f"{i}+" for i in range(7)]
 baseline_vals = [baseline["accuracy"], baseline["macro_f1"]] + [baseline["per_class"][str(i)]["f1"] for i in range(7)]
 eval_vals = [selected_eval["accuracy"], selected_eval["macro_f1"]] + [selected_eval["per_class"][str(i)]["f1"] for i in range(7)]
@@ -464,7 +464,7 @@ df_compare = pd.DataFrame({
     selected_eval["version"]: eval_vals
 })
 
-# 🔹 Streamlit 표시
+# 
 st.sidebar.subheader("📊 Model Comparison")
 st.sidebar.dataframe(
     df_compare.style.format(subset=["Original", selected_eval["version"]], formatter="{:.3f}"),
