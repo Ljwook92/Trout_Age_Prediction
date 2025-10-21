@@ -399,6 +399,13 @@ if "last_filter" not in st.session_state or st.session_state.last_filter != sour
 #show_feedback_table = st.sidebar.checkbox("Show feedback table")
 
 st.sidebar.header("Dataset Details")
+st.sidebar.markdown(
+    """
+    **Total Dataset:** 16,221  
+    **Labeled Dataset:** 1,393  
+    **Unlabeled Dataset:** 14,828  
+    """
+)
 
 # Load model/data/db
 model, transform = load_model()
