@@ -30,14 +30,47 @@ DEVICE = torch.device("cpu")
 # Model Loading (user-provided)
 # -----------------------------
 @st.cache_resource
+import requests
+
+@st.cache_resource
 def load_model():
-    
     set_seed(100)
 
-    backbone = torch.load(
+    # ---------- 1️⃣ Utility: download file if not exists ----------
+    def download_if_needed(url, local_path):
+        if not os.path.exists(local_path):
+            print(f"📥 Downloading {os.path.basename(local_path)} from Google Cloud...")
+            r = requests.get(url)
+            if r.status_code == 200:
+                with open(local_path, "wb") as f:
+                    f.write(r.content)
+                print(f"✅ Saved to {local_path}")
+            else:
+                raise RuntimeError(f"❌ Failed to download {url} (status {r.status_code})")
+        return local_path
+
+    # ---------- 2️⃣ Download backbone model ----------
+    backbone_path = download_if_needed(
         "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/backbone_resnet18_simclr2.pth",
-        map_location=DEVICE, weights_only=False
+        "backbone_resnet18_simclr2.pth"
     )
+
+    updated_path_url = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head_updated.pth"
+    original_path_url = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth"
+
+    updated_local = "classifier_head_updated.pth"
+    original_local = "classifier_head.pth"
+
+    # ---------- 3️⃣ Choose which classifier head to load ----------
+    if requests.head(updated_path_url).status_code == 200:
+        head_path = download_if_needed(updated_path_url, updated_local)
+        print("🔹 Loading fine-tuned classifier head...")
+    else:
+        head_path = download_if_needed(original_path_url, original_local)
+        print("⚪ Loading original classifier head...")
+
+    # ---------- 4️⃣ Load model weights ----------
+    backbone = torch.load(backbone_path, map_location=DEVICE, weights_only=False)
     backbone = nn.Sequential(backbone, nn.Flatten())
 
     classifier_head = nn.Sequential(
@@ -46,19 +79,13 @@ def load_model():
         nn.Linear(128, NUM_CLASSES)
     ).to(DEVICE)
 
-    updated_path = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head_updated.pth"
-    original_path = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth"
-    if os.path.exists(updated_path):
-    	print("🔹 Loading fine-tuned classifier head...")
-    	state_dict = torch.load(updated_path, map_location=DEVICE)
-    else:
-    	print("⚪ Loading original classifier head...")
-    	state_dict = torch.load(original_path, map_location=DEVICE)
+    state_dict = torch.load(head_path, map_location=DEVICE)
     classifier_head.load_state_dict(state_dict)
 
     model = nn.Sequential(backbone, classifier_head).to(DEVICE)
     model.eval()
 
+    # ---------- 5️⃣ Define image transformation pipeline ----------
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -67,6 +94,7 @@ def load_model():
             std=[0.229, 0.224, 0.225]
         )
     ])
+
     return model, transform
 
 def set_seed(seed=100):
