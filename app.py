@@ -153,9 +153,16 @@ def load_model():
         )
     ])
 
+    # ---------- Step 5: Display version info ----------
     print(f"✅ Loaded model version: {CURRENT_MODEL_VERSION}")
-    return model, transform, CURRENT_MODEL_VERSION
+    st.sidebar.markdown(
+        f"<div style='padding:6px; background-color:#f5f5f5; border-radius:8px;'>"
+        f"🧠 <b>Current Model Version:</b> <code>{CURRENT_MODEL_VERSION}</code>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
 
+    return model, transform, CURRENT_MODEL_VERSION
 def set_seed(seed=100):
     import random, numpy as np, torch
     random.seed(seed)
