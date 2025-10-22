@@ -868,7 +868,8 @@ if "source" in df.columns:
                 
 with right:
     st.subheader("Model Prediction")
-    # labeled 
+
+    # 🔹 If labeled data → show ground truth label
     if source_val == "labeled" and "label" in df.columns:
         label_row = df.loc[df["path"] == img_path, "label"]
         if not label_row.empty:
@@ -879,7 +880,7 @@ with right:
         else:
             st.warning("Label column missing or empty for this labeled data.")
     else:
-        # Unlabeled
+        # 🔹 Unlabeled → model prediction
         pred_label, pred_prob, err = predict(model, transform, img_path, con=con)
         if err:
             st.error(err)
@@ -888,8 +889,10 @@ with right:
                 f"**Predicted:** `{LABEL_NAMES[pred_label]}` | **Prob:** {pred_prob:.4f} | **Length:** {length_val} | **Source:** {source_val}"
             )
 
+    # 🔸 Expert Feedback UI
     st.divider()
     st.subheader("Expert Feedback")
+
     choice = st.radio(
         "Is the prediction correct?",
         options=["Correct", "Incorrect"],
@@ -905,21 +908,26 @@ with right:
             format_func=lambda i: f"{i} ({LABEL_NAMES[i]})"
         )
 
+    # 🔹 Navigation buttons
     cols = st.columns(3)
+
+    # ⬅️ Previous
     with cols[0]:
-         if st.button("⬅️ Previous"):
+        if st.button("⬅️ Previous"):
             st.session_state.idx = max(0, st.session_state.idx - 1)
-            st.session_state[f"idx_{source_filter}"] = st.session_state.idx  
+            st.session_state[f"idx_{source_filter}"] = st.session_state.idx
             st.rerun()
 
+    # ✅ Save & Next
     with cols[1]:
         if st.button("✅ Save & Next"):
             is_correct = 1 if choice == "Correct" else 0
             final_correct = None if is_correct == 1 else int(correct_label)
-            
+
             if (is_correct == 0) and (final_correct is None):
                 st.warning("Please choose a correct label when marking as Incorrect.")
             else:
+                # 🔹 Save feedback to DB
                 upsert_feedback(
                     con,
                     img_path=img_path,
@@ -931,29 +939,36 @@ with right:
                 )
                 st.success("Saved feedback.")
 
-                
-                # 🔹 Fetch current incorrect count
+                # 🔹 Check incorrect feedback count
                 cur = con.cursor()
                 cur.execute("SELECT COUNT(*) FROM feedback WHERE is_correct=0 AND correct_label IS NOT NULL")
                 feedback_count = cur.fetchone()[0]
 
-                # 🔹 Fine-tune only when count hits multiple of 20
+                # 🔸 Fine-tune after every 20 incorrect feedbacks
                 if feedback_count % 20 == 0 and feedback_count > 0:
                     st.info(f"🧠 Fine-tuning triggered automatically (feedbacks: {feedback_count})")
                     msg = fine_tune_on_feedback(model, transform, con)
                     st.caption(msg)
+
+                    # ✅ After fine-tuning: reset cache + reload new model
+                    st.cache_resource.clear()
+                    model, transform, CURRENT_MODEL_VERSION = load_model()
+                    st.sidebar.success(f"🔄 Reloaded model version: {CURRENT_MODEL_VERSION}")
+
                 else:
                     st.caption(f"Waiting for next fine-tuning... ({feedback_count % 20}/20 accumulated)")
 
+                # 🔹 Move to next image
                 time.sleep(0.1)
-                st.session_state.idx = min(len(paths)-1, st.session_state.idx + 1)
+                st.session_state.idx = min(len(paths) - 1, st.session_state.idx + 1)
                 st.session_state[f"idx_{source_filter}"] = st.session_state.idx
                 st.rerun()
 
+    # ➡️ Skip
     with cols[2]:
-         if st.button("Skip ➡️"):
-            st.session_state.idx = min(len(paths)-1, st.session_state.idx + 1)
-            st.session_state[f"idx_{source_filter}"] = st.session_state.idx  
+        if st.button("Skip ➡️"):
+            st.session_state.idx = min(len(paths) - 1, st.session_state.idx + 1)
+            st.session_state[f"idx_{source_filter}"] = st.session_state.idx
             st.rerun()
             
 # ----------------------------------------------------
