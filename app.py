@@ -168,25 +168,69 @@ def set_seed(seed=100):
 # -----------------------------
 # Data Source
 # -----------------------------
-def load_image_list():
-    if CSV_PATH.startswith("http"):  
+def load_image_list(selected_folder=None):
+    """
+    Load images either from a CSV file or directly from a GCS folder.
+
+    - If `selected_folder` is provided, images will be listed from that folder (unlabeled mode).
+    - If not provided, images are loaded from the CSV_PATH.
+    """
+
+    client, bucket = get_gcs_client()
+
+    # ---------------------------
+    # Case 1: Folder-based loading (GCS)
+    # ---------------------------
+    if selected_folder:
+        prefix = f"trout_scale_images/troutscales_newimages0825/{selected_folder}/"
+        blobs = list(bucket.list_blobs(prefix=prefix))
+
+        # Filter only image files (jpg, png, jpeg)
+        image_paths = [
+            f"https://storage.googleapis.com/{bucket.name}/{b.name}"
+            for b in blobs
+            if b.name.lower().endswith((".png", ".jpg", ".jpeg"))
+        ]
+
+        if not image_paths:
+            st.warning(f"No images found in {prefix}")
+            return pd.DataFrame(columns=["path", "source"]), []
+
+        # Create DataFrame and mark all as 'unlabeled'
+        df = pd.DataFrame({
+            "path": image_paths,
+            "source": "unlabeled"
+        })
+
+        return df, image_paths
+
+    # ---------------------------
+    # Case 2: CSV-based loading
+    # ---------------------------
+    if CSV_PATH.startswith("http"):
         r = requests.get(CSV_PATH)
         if r.status_code != 200:
             st.error(f"Failed to fetch CSV file: {r.status_code}")
             return pd.DataFrame({"path": []}), []
         df = pd.read_csv(io.StringIO(r.text))
-    elif os.path.exists(CSV_PATH):  
+    elif os.path.exists(CSV_PATH):
         df = pd.read_csv(CSV_PATH)
     else:
         st.error("CSV path does not exist.")
         return pd.DataFrame({"path": []}), []
 
-    # 기본 구조 확인
+    # Validate the structure
     if "path" not in df.columns:
         st.error("CSV must include a 'path' column.")
         return pd.DataFrame({"path": []}), []
 
+    # Drop rows with missing paths and reset index
     df = df.dropna(subset=["path"]).reset_index(drop=True)
+
+    # If 'source' column does not exist, assign all as 'unlabeled'
+    if "source" not in df.columns:
+        df["source"] = "unlabeled"
+
     paths = df["path"].tolist()
     return df, paths
 
@@ -582,6 +626,29 @@ if "last_filter" not in st.session_state or st.session_state.last_filter != sour
 
 #show_feedback_table = st.sidebar.checkbox("Show feedback table")
 
+# -----------------------------
+# Image Folder Selection
+# -----------------------------
+st.sidebar.subheader("Select Image Folder")
+
+# Available subfolders in GCS
+available_folders = [
+    "cu1images", "cu2images", "cu3images", "cu4images",
+    "du1images", "du2images", "du3images", "du4images",
+    "po1images", "po2images", "po3images", "po4images",
+    "to1images", "to2images", "to3images", "to4images",
+    "tu1images", "tu2images", "tu3images", "tu4images"
+]
+
+# Dropdown to choose the folder
+selected_folder = st.sidebar.selectbox("Choose a subfolder", available_folders)
+
+# Set FOLDER_SCAN dynamically
+FOLDER_SCAN = f"trout_scale_images/troutscales_newimages0825/{selected_folder}/"
+
+# Display selected folder path
+st.sidebar.markdown(f"**Current Folder:** `{FOLDER_SCAN}`")
+
 st.sidebar.header("Dataset Details")
 st.sidebar.markdown(
     """
@@ -629,7 +696,7 @@ st.sidebar.dataframe(
 
 # Load model/data/db
 model, transform, CURRENT_MODEL_VERSION = load_model()
-df, paths = load_image_list()
+df, paths = load_image_list(selected_folder=selected_folder)
 con = init_db()
 
 # Ensure model_version column exists (for version-aware cache)
