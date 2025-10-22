@@ -66,7 +66,7 @@ def get_next_model_version(bucket):
 # -----------------------------
 @st.cache_resource
 def load_model():
-    """Load SimCLR backbone and the latest available classifier head from GCS."""
+    """Load fine-tuned backbone + head from checkpoint, or fall back to base SimCLR + head if not found."""
     set_seed(100)
     client, bucket = get_gcs_client()
 
@@ -84,62 +84,65 @@ def load_model():
                 raise RuntimeError(f"❌ Failed to download {url} (status {r.status_code})")
         return local_path
 
-    # ---------- Helper: Find the latest fine-tuned model ----------
-    def get_latest_model_version(bucket):
-        """Search for the most recent classifier_head_v{N}.pth file in GCS."""
-        blobs = list(bucket.list_blobs(prefix="simCLR_endtoend/classifier_head_v"))
+    # ---------- Helper: Find the latest fine-tuned backbone_head checkpoint ----------
+    def get_latest_backbone_head_version(bucket):
+        """Search for the most recent backbone_head_v{N}.pth file in GCS."""
+        blobs = list(bucket.list_blobs(prefix="simCLR_endtoend/backbone_head_v"))
         versions = []
         for b in blobs:
             name = os.path.basename(b.name)
-            if name.startswith("classifier_head_v") and name.endswith(".pth"):
+            if name.startswith("backbone_head_v") and name.endswith(".pth"):
                 try:
-                    num = int(name.replace("classifier_head_v", "").replace(".pth", ""))
+                    num = int(name.replace("backbone_head_v", "").replace(".pth", ""))
                     versions.append((num, b.name))
                 except ValueError:
                     pass
         if versions:
             latest_blob = max(versions, key=lambda x: x[0])[1]
-            print(f"🔹 Found latest fine-tuned model: {latest_blob}")
+            print(f"🔹 Found latest fine-tuned backbone_head: {latest_blob}")
             return latest_blob
         else:
-            print("⚪ No fine-tuned classifier found. Using original.")
+            print("⚪ No fine-tuned backbone_head found. Using original backbone and head.")
             return None
 
-    # ---------- Step 1: Load backbone ----------
+    # ---------- Step 1: Load base backbone ----------
     backbone_path = download_if_needed(
         "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/backbone_resnet18_simclr2.pth",
         os.path.join(tempfile.gettempdir(), "backbone_resnet18_simclr2.pth")
     )
 
-    # ---------- Step 2: Load latest classifier head ----------
-    latest_head_blob = get_latest_model_version(bucket)
-    if latest_head_blob:
-        tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(latest_head_blob))
-        blob = bucket.blob(latest_head_blob)
-        blob.download_to_filename(tmp_path)
-        head_path = tmp_path
-        CURRENT_MODEL_VERSION = os.path.basename(latest_head_blob)
+    # ---------- Step 2: Load fine-tuned checkpoint if available ----------
+    latest_ckpt_blob = get_latest_backbone_head_version(bucket)
+    if latest_ckpt_blob:
+        tmp_ckpt_path = os.path.join(tempfile.gettempdir(), os.path.basename(latest_ckpt_blob))
+        blob = bucket.blob(latest_ckpt_blob)
+        blob.download_to_filename(tmp_ckpt_path)
+        ckpt_path = tmp_ckpt_path
+        CURRENT_MODEL_VERSION = os.path.basename(latest_ckpt_blob)
     else:
-        # Fallback: original head
-        head_path = download_if_needed(
-            "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth",
-            os.path.join(tempfile.gettempdir(), "classifier_head.pth")
+        ckpt_path = download_if_needed(
+            "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/backbone_head.pth",
+            os.path.join(tempfile.gettempdir(), "backbone_head.pth")
         )
-        CURRENT_MODEL_VERSION = "classifier_head_original.pth"
+        CURRENT_MODEL_VERSION = "backbone_head.pth"
 
-    # ---------- Step 3: Load model ----------
+    # ---------- Step 3: Load model from checkpoint ----------
+    checkpoint = torch.load(ckpt_path, map_location=DEVICE)
+
+    # Build backbone
     backbone = torch.load(backbone_path, map_location=DEVICE, weights_only=False)
     backbone = nn.Sequential(backbone, nn.Flatten())
+    backbone.load_state_dict(checkpoint["backbone_state_dict"])  # ✅ fine-tuned weights applied
 
+    # Build classifier head
     classifier_head = nn.Sequential(
         nn.Linear(512, 128),
         nn.ReLU(),
         nn.Linear(128, NUM_CLASSES)
     ).to(DEVICE)
+    classifier_head.load_state_dict(checkpoint["head_state_dict"])  # ✅ fine-tuned head loaded
 
-    state_dict = torch.load(head_path, map_location=DEVICE)
-    classifier_head.load_state_dict(state_dict)
-
+    # Combine backbone + head
     model = nn.Sequential(backbone, classifier_head).to(DEVICE)
     model.eval()
 
@@ -154,7 +157,7 @@ def load_model():
     ])
 
     # ---------- Step 5: Display version info ----------
-    print(f"✅ Loaded model version: {CURRENT_MODEL_VERSION}")
+    print(f"✅ Loaded fine-tuned model version: {CURRENT_MODEL_VERSION}")
     st.sidebar.markdown(
         f"<div style='padding:6px; background-color:#f5f5f5; border-radius:8px;'>"
         f"<b>Current Model Version:</b> <code>{CURRENT_MODEL_VERSION}</code>"
@@ -162,7 +165,8 @@ def load_model():
         unsafe_allow_html=True
     )
 
-    return model, transform, CURRENT_MODEL_VERSION
+    return model, transform, CURRENT_MODEL_VERSIO
+    
 def set_seed(seed=100):
     import random, numpy as np, torch
     random.seed(seed)
@@ -520,11 +524,10 @@ def fine_tune_on_feedback(model, transform, con,
                           epoch_gpu=3, epoch_cpu=1,
                           mix_correct_ratio=0.2):
     """
-    Fine-tune the classifier head every 'batch_trigger' incorrect feedbacks.
-    Mixes in 20% of correct samples to prevent forgetting.
-    Automatically saves new model versions (classifier_head_v{N}.pth) to GCS.
+    Fine-tune BOTH backbone and classifier head every 'batch_trigger' incorrect feedbacks.
+    Mixes in 20% of correct samples to prevent catastrophic forgetting.
+    Automatically saves new model versions (backbone_head_v{N}.pth) to GCS.
     """
-
     device = DEVICE
 
     # 1️⃣ Load incorrect feedback samples
@@ -539,30 +542,29 @@ def fine_tune_on_feedback(model, transform, con,
         con
     )
 
-    # 3️⃣ No incorrect feedbacks yet
     if len(df_incorrect) == 0:
         return "🟡 No feedback data available yet."
 
-    # 4️⃣ Trigger fine-tuning only every 'batch_trigger' incorrect samples
+    # 3️⃣ Trigger fine-tuning only every 'batch_trigger' incorrect samples
     if len(df_incorrect) % batch_trigger != 0:
         return f"⏸️ Waiting for more feedback... ({len(df_incorrect)}/{batch_trigger})"
 
-    # 5️⃣ Determine hyperparameters
+    # 4️⃣ Determine hyperparameters
     if device.type == "cuda":
         batch_size, lr, epochs = batch_size_gpu, lr_gpu, epoch_gpu
     else:
         batch_size, lr, epochs = batch_size_cpu, lr_cpu, epoch_cpu
 
-    # 6️⃣ Mix 20% correct samples
+    # 5️⃣ Mix 20% correct samples
     n_correct_sample = int(len(df_incorrect) * mix_correct_ratio)
     df_correct_sampled = df_correct.sample(n=min(len(df_correct), n_correct_sample), random_state=42) \
                         if len(df_correct) > 0 else pd.DataFrame(columns=df_correct.columns)
 
-    # 7️⃣ Combine incorrect + sampled correct samples
+    # 6️⃣ Combine incorrect + sampled correct samples
     df_used = pd.concat([df_incorrect, df_correct_sampled], ignore_index=True)
     print(f"🧩 Fine-tuning on {len(df_used)} samples ({len(df_incorrect)} incorrect + {len(df_correct_sampled)} correct)")
 
-    # 8️⃣ Prepare tensors
+    # 7️⃣ Prepare tensors
     x_list, y_list = [], []
     for _, row in df_used.iterrows():
         try:
@@ -585,11 +587,9 @@ def fine_tune_on_feedback(model, transform, con,
     X = torch.stack(x_list).to(device)
     y = torch.tensor(y_list).to(device)
 
-    # 9️⃣ Fine-tune only the classifier head
-    classifier_head = model[-1]
-    classifier_head.train()
-
-    optimizer = torch.optim.Adam(classifier_head.parameters(), lr=lr)
+    # 8️⃣ Fine-tune BOTH backbone + classifier head
+    model.train()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
     for epoch in range(epochs):
@@ -597,54 +597,55 @@ def fine_tune_on_feedback(model, transform, con,
         for i in range(0, len(X), batch_size):
             xb, yb = X[i:i+batch_size], y[i:i+batch_size]
             optimizer.zero_grad()
-            logits = classifier_head(model[0](xb))
+            logits = model(xb)
             loss = criterion(logits, yb)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
         print(f"Epoch {epoch+1}/{epochs} — Avg Loss: {total_loss / len(X):.4f}")
 
-    # 🔟 Save updated weights to GCS with version increment
+    # 9️⃣ Save updated backbone + head to GCS
     try:
-        # Create temp file
         with tempfile.NamedTemporaryFile(suffix=".pth", delete=False) as tmp:
-            torch.save(classifier_head.state_dict(), tmp.name)
+            torch.save({
+                "backbone_state_dict": model[0].state_dict(),
+                "head_state_dict": model[1].state_dict()
+            }, tmp.name)
             tmp_path = tmp.name
 
         # Connect to GCS
         storage_client = storage.Client.from_service_account_info(creds_dict)
         bucket = storage_client.bucket(st.secrets["gcp"]["bucket_name"])
 
-        # 🔹 Determine next available version number
-        blobs = list(bucket.list_blobs(prefix="simCLR_endtoend/classifier_head_v"))
+        # Determine next version name
+        blobs = list(bucket.list_blobs(prefix="simCLR_endtoend/backbone_head_v"))
         versions = []
         for b in blobs:
             name = os.path.basename(b.name)
-            if name.startswith("classifier_head_v") and name.endswith(".pth"):
+            if name.startswith("backbone_head_v") and name.endswith(".pth"):
                 try:
-                    num = int(name.replace("classifier_head_v", "").replace(".pth", ""))
+                    num = int(name.replace("backbone_head_v", "").replace(".pth", ""))
                     versions.append(num)
                 except ValueError:
                     pass
         next_version = max(versions) + 1 if versions else 1
-        new_version_name = f"classifier_head_v{next_version}.pth"
+        new_version_name = f"backbone_head_v{next_version}.pth"
 
-        # Upload file to GCS
+        # Upload checkpoint
         blob = bucket.blob(f"simCLR_endtoend/{new_version_name}")
         blob.upload_from_filename(tmp_path)
 
-        # 🔹 Update global model version
+        # Update global version info
         global CURRENT_MODEL_VERSION
         CURRENT_MODEL_VERSION = new_version_name
 
-        # ✅ Immediately update model_version in DB cache (new)
+        # Update DB version field
         cur = con.cursor()
-
         cur.execute("UPDATE feedback SET model_version = ?", (CURRENT_MODEL_VERSION,))
         con.commit()
 
-        print(f"☁️ Uploaded fine-tuned weights as {new_version_name}.")
-        return f"✅ Fine-tuned and saved as {new_version_name} ({len(df_used)} samples)."
+        print(f"☁️ Uploaded fine-tuned checkpoint as {new_version_name}.")
+        return f"✅ Fine-tuned backbone + head saved as {new_version_name} ({len(df_used)} samples)."
 
     except Exception as e:
         return f"⚠️ Fine-tuning done locally but upload failed: {e}"
