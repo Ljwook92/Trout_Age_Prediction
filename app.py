@@ -4,6 +4,7 @@ import time
 import sqlite3
 import requests
 from datetime import datetime
+import random
 
 from google.cloud import storage
 from google.oauth2 import service_account
