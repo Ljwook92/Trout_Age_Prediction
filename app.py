@@ -172,20 +172,22 @@ def load_image_list(selected_folder=None):
     """
     Load images either from a CSV file or directly from a GCS folder.
 
-    - If `selected_folder` is provided, images will be listed from that folder (unlabeled mode).
-    - If not provided, images are loaded from the CSV_PATH.
+    - If `selected_folder` is provided, images are listed from that folder (unlabeled mode).
+    - If not provided, images are loaded from CSV_PATH.
     """
-
     client, bucket = get_gcs_client()
 
     # ---------------------------
     # Case 1: Folder-based loading (GCS)
     # ---------------------------
     if selected_folder:
-        prefix = f"trout_scale_images/troutscales_newimages0825/{selected_folder}/"
+        # ✅ Correct prefix: bucket name is already 'trout_scale_images'
+        prefix = f"troutscales_newimages0825/{selected_folder}/"
+
+        # List blobs under the selected folder
         blobs = list(bucket.list_blobs(prefix=prefix))
 
-        # Filter only image files (jpg, png, jpeg)
+        # Collect only image files (jpg, png, jpeg)
         image_paths = [
             f"https://storage.googleapis.com/{bucket.name}/{b.name}"
             for b in blobs
@@ -219,15 +221,14 @@ def load_image_list(selected_folder=None):
         st.error("CSV path does not exist.")
         return pd.DataFrame({"path": []}), []
 
-    # Validate the structure
+    # Validate structure
     if "path" not in df.columns:
         st.error("CSV must include a 'path' column.")
         return pd.DataFrame({"path": []}), []
 
-    # Drop rows with missing paths and reset index
     df = df.dropna(subset=["path"]).reset_index(drop=True)
 
-    # If 'source' column does not exist, assign all as 'unlabeled'
+    # Assign default 'unlabeled' source if not present
     if "source" not in df.columns:
         df["source"] = "unlabeled"
 
