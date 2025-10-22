@@ -95,17 +95,6 @@ def load_model():
 
     latest_checkpoint = get_latest_checkpoint(bucket)
 
-    # 🔹 Load backbone
-    backbone_url = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/backbone_resnet18_simclr2.pth"
-    backbone_path = os.path.join(tempfile.gettempdir(), "backbone_resnet18_simclr2.pth")
-    if not os.path.exists(backbone_path):
-        print("📥 Downloading backbone...")
-        r = requests.get(backbone_url)
-        r.raise_for_status()
-        with open(backbone_path, "wb") as f:
-            f.write(r.content)
-    backbone = torch.load(backbone_path, map_location=DEVICE, weights_only=False)
-    backbone = nn.Sequential(backbone, nn.Flatten()).to(DEVICE)
 
     # 🔹 Load classifier head
     classifier_head = nn.Sequential(
