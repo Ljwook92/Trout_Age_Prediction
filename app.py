@@ -287,6 +287,7 @@ def init_db():
     """Initialize feedback database.
     - If feedback.db exists in GCS → download it.
     - If not, remove any cached local DB, create a new one, and upload it to GCS.
+    Also ensures that the table always includes the 'model_version' column.
     """
     client, bucket = get_gcs_client()
     blob = bucket.blob("simCLR_endtoend/feedback.db")
@@ -296,9 +297,8 @@ def init_db():
     if blob.exists(client):
         blob.download_to_filename(tmp_path)
         print("✅ Downloaded feedback.db from GCS.")
-
-    # ⚪ Case 2: If not found in GCS → reset local cache and create new DB
     else:
+        # ⚪ Case 2: If not found in GCS → reset local cache and create new DB
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
             print("🗑️ Deleted old local feedback.db cache.")
@@ -315,7 +315,8 @@ def init_db():
                 is_correct INTEGER,
                 correct_label INTEGER,
                 user TEXT,
-                ts TEXT
+                ts TEXT,
+                model_version TEXT
             )
         """)
         con.commit()
@@ -326,7 +327,20 @@ def init_db():
         return con
 
     # ✅ Return SQLite connection to downloaded DB
-    return sqlite3.connect(tmp_path)
+    con = sqlite3.connect(tmp_path)
+
+    # 🔹 Ensure the schema includes model_version
+    cur = con.cursor()
+    cur.execute("PRAGMA table_info(feedback);")
+    cols = [row[1] for row in cur.fetchall()]
+    if "model_version" not in cols:
+        cur.execute("ALTER TABLE feedback ADD COLUMN model_version TEXT;")
+        con.commit()
+        print("✅ Added missing 'model_version' column to feedback table.")
+    else:
+        print("ℹ️ 'model_version' column already exists.")
+
+    return con
 
 
 def upsert_feedback(con, img_path, pred_label, pred_prob, is_correct, correct_label, user="expert"):
