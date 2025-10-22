@@ -697,11 +697,11 @@ df_compare = pd.DataFrame({
 })
 
 # 
-st.sidebar.subheader("Model Comparison")
-st.sidebar.dataframe(
-    df_compare.style.format(subset=["Original", selected_eval["version"]], formatter="{:.3f}"),
-    use_container_width=True
-)
+# st.sidebar.subheader("Model Comparison")
+#st.sidebar.dataframe(
+#    df_compare.style.format(subset=["Original", selected_eval["version"]], formatter="{:.3f}"),
+#    use_container_width=True
+#)
 
 # Load model/data/db
 model, transform, CURRENT_MODEL_VERSION = load_model()
