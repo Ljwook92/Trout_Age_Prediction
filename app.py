@@ -157,7 +157,7 @@ def load_model():
     print(f"✅ Loaded model version: {CURRENT_MODEL_VERSION}")
     st.sidebar.markdown(
         f"<div style='padding:6px; background-color:#f5f5f5; border-radius:8px;'>"
-        f"🧠 <b>Current Model Version:</b> <code>{CURRENT_MODEL_VERSION}</code>"
+        f"<b>Current Model Version:</b> <code>{CURRENT_MODEL_VERSION}</code>"
         f"</div>",
         unsafe_allow_html=True
     )
