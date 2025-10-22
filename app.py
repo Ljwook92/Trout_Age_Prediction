@@ -759,10 +759,30 @@ def ensure_model_version_column(con):
 # ✅ Add this line
 ensure_model_version_column(con)
 
-# 🔹 Apply filter
+# 🔹 Apply filter (don't overwrite paths here)
 if source_filter != "all" and "source" in df.columns:
     df = df[df["source"].str.lower() == source_filter.lower()].reset_index(drop=True)
-    paths = df["path"].tolist()
+    # ❌ DO NOT: paths = df["path"].tolist()
+
+# 🔀 Shuffle AFTER filtering, once per folder
+import random
+
+rand_key = f"random_paths_{selected_folder}"
+folder_key = "last_folder"
+
+if st.session_state.get(folder_key) != selected_folder:
+    paths_all = df["path"].tolist()
+    random.shuffle(paths_all)
+    st.session_state[rand_key] = paths_all
+    st.session_state[folder_key] = selected_folder
+    st.session_state.idx = 0  # 폴더 바뀌면 처음부터
+
+if rand_key not in st.session_state:
+    paths_all = df["path"].tolist()
+    random.shuffle(paths_all)
+    st.session_state[rand_key] = paths_all
+
+paths = st.session_state[rand_key]
 
 # ✅ Resume from last feedback per source_filter
 # Set state key by source type.
