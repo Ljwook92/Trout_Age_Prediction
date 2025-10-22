@@ -616,6 +616,12 @@ def fine_tune_on_feedback(model, transform, con,
         global CURRENT_MODEL_VERSION
         CURRENT_MODEL_VERSION = new_version_name
 
+        # ✅ Immediately update model_version in DB cache (new)
+        cur = con.cursor()
+
+        cur.execute("UPDATE feedback SET model_version = ?", (CURRENT_MODEL_VERSION,))
+        con.commit()
+
         print(f"☁️ Uploaded fine-tuned weights as {new_version_name}.")
         return f"✅ Fine-tuned and saved as {new_version_name} ({len(df_used)} samples)."
 
