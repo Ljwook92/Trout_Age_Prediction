@@ -191,8 +191,6 @@ def set_seed(seed=100):
 # -----------------------------
 # Data Source
 # -----------------------------
-import random  # ✅ 꼭 추가!
-
 def load_image_list(selected_folder=None):
     """
     Load images either from a CSV file or directly from a GCS folder.
@@ -286,7 +284,7 @@ def load_image_list(selected_folder=None):
     else:
         paths = st.session_state["random_paths"]
 
-    return df, paths)
+    return df, paths
 
 # -----------------------------
 # Baseline (Original Model Results)
