@@ -68,13 +68,13 @@ def get_next_model_version(bucket):
 def load_model():
     """
     Load the latest fine-tuned model (backbone_head_vN.pth) from GCS.
-    If no fine-tuned model exists, fallback to the original backbone + head.
+    If none exists, fallback to baseline (v0). Freeze backbone.
     """
     set_seed(100)
     client, bucket = get_gcs_client()
 
+    # ---------- Find latest checkpoint ----------
     def get_latest_checkpoint(bucket):
-        """Find the most recent backbone_head_v{N}.pth in GCS."""
         blobs = list(bucket.list_blobs(prefix="simCLR_endtoend/backbone_head_v"))
         versions = []
         for b in blobs:
@@ -85,50 +85,57 @@ def load_model():
                     versions.append((num, b.name))
                 except ValueError:
                     pass
-        if versions:
-            latest_blob = max(versions, key=lambda x: x[0])[1]
-            print(f"🔹 Found latest fine-tuned model: {latest_blob}")
-            return latest_blob
-        else:
-            print("⚪ No fine-tuned checkpoint found. Using original model.")
-            return None
+        return max(versions, key=lambda x: x[0])[1] if versions else None
 
     latest_checkpoint = get_latest_checkpoint(bucket)
 
+    # ---------- Download checkpoint ----------
+    if latest_checkpoint:
+        blob = bucket.blob(latest_checkpoint)
+        tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(latest_checkpoint))
+        blob.download_to_filename(tmp_path)
+        checkpoint = torch.load(tmp_path, map_location=DEVICE)
+        CURRENT_MODEL_VERSION = os.path.basename(latest_checkpoint)
+        print(f"🔹 Loaded latest fine-tuned checkpoint: {CURRENT_MODEL_VERSION}")
+    else:
+        blob = bucket.blob("simCLR_endtoend/backbone_head_v0.pth")
+        tmp_path = os.path.join(tempfile.gettempdir(), "backbone_head_v0.pth")
+        blob.download_to_filename(tmp_path)
+        checkpoint = torch.load(tmp_path, map_location=DEVICE)
+        CURRENT_MODEL_VERSION = "backbone_head_v0.pth"
+        print("⚪ Using baseline checkpoint (v0).")
 
-    # 🔹 Load classifier head
+    # ---------- Load backbone structure ----------
+    backbone_base_path = os.path.join(tempfile.gettempdir(), "backbone_resnet18_simclr2.pth")
+    if not os.path.exists(backbone_base_path):
+        backbone_url = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/backbone_resnet18_simclr2.pth"
+        print("📥 Downloading backbone base model...")
+        r = requests.get(backbone_url)
+        r.raise_for_status()
+        with open(backbone_base_path, "wb") as f:
+            f.write(r.content)
+
+    backbone = torch.load(backbone_base_path, map_location=DEVICE, weights_only=False)
+    backbone = nn.Sequential(backbone, nn.Flatten()).to(DEVICE)
+
+    # ---------- Load classifier head ----------
     classifier_head = nn.Sequential(
         nn.Linear(512, 128),
         nn.ReLU(),
         nn.Linear(128, NUM_CLASSES)
     ).to(DEVICE)
 
-    # If fine-tuned checkpoint exists → load head weights from there
-    if latest_checkpoint:
-        tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(latest_checkpoint))
-        bucket.blob(latest_checkpoint).download_to_filename(tmp_path)
-        checkpoint = torch.load(tmp_path, map_location=DEVICE)
-        classifier_head.load_state_dict(checkpoint["head_state_dict"])
-        CURRENT_MODEL_VERSION = os.path.basename(latest_checkpoint)
-    else:
-        head_url = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth"
-        head_path = os.path.join(tempfile.gettempdir(), "classifier_head.pth")
-        if not os.path.exists(head_path):
-            r = requests.get(head_url)
-            r.raise_for_status()
-            with open(head_path, "wb") as f:
-                f.write(r.content)
-        state_dict = torch.load(head_path, map_location=DEVICE)
-        classifier_head.load_state_dict(state_dict)
-        CURRENT_MODEL_VERSION = "classifier_head_original.pth"
+    backbone.load_state_dict(checkpoint["backbone_state_dict"])
+    classifier_head.load_state_dict(checkpoint["head_state_dict"])
 
-    # 🔹 Freeze backbone
+    # ---------- Freeze backbone ----------
     for param in backbone.parameters():
         param.requires_grad = False
 
     model = nn.Sequential(backbone, classifier_head).to(DEVICE)
     model.eval()
 
+    # ---------- Transform ----------
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -136,11 +143,13 @@ def load_model():
                              std=[0.229, 0.224, 0.225])
     ])
 
+    # ---------- Display ----------
     print(f"✅ Loaded model version: {CURRENT_MODEL_VERSION}")
     st.sidebar.markdown(
         f"<div style='padding:6px; background-color:#f5f5f5; border-radius:8px;'>"
         f"<b>Current Model Version:</b> <code>{CURRENT_MODEL_VERSION}</code>"
-        f"</div>", unsafe_allow_html=True
+        f"</div>",
+        unsafe_allow_html=True
     )
 
     return model, transform, CURRENT_MODEL_VERSION
