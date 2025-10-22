@@ -640,9 +640,19 @@ def fine_tune_on_feedback(model, transform, con,
     blob.upload_from_filename(tmp_path)
 
     # Update DB and current version
+ 
     global CURRENT_MODEL_VERSION
     CURRENT_MODEL_VERSION = new_name
-    con.execute("UPDATE feedback SET model_version = ?", (CURRENT_MODEL_VERSION,))
+
+    # keep feedback but renew cache
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE feedback
+        SET pred_label = NULL,
+            pred_prob  = NULL,
+            model_version = NULL
+        WHERE is_correct IS NULL
+    """)
     con.commit()
 
     print(f"☁️ Uploaded fine-tuned head as {new_name}.")
