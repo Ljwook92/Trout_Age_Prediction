@@ -191,6 +191,8 @@ def set_seed(seed=100):
 # -----------------------------
 # Data Source
 # -----------------------------
+import random  # ✅ 꼭 추가!
+
 def load_image_list(selected_folder=None):
     """
     Load images either from a CSV file or directly from a GCS folder.
@@ -227,24 +229,27 @@ def load_image_list(selected_folder=None):
 
         # ✅ Merge length info from CSV_PATH (by filename)
         try:
-            # Read reference CSV that includes length
             df_len = pd.read_csv(CSV_PATH, usecols=["path", "length"])
-
-            # Extract filename only for matching
             df_len["base"] = df_len["path"].apply(lambda x: os.path.basename(str(x)))
             df["base"] = df["path"].apply(lambda x: os.path.basename(str(x)))
-
-            # Merge by base filename
             df = df.merge(df_len[["base", "length"]], on="base", how="left")
-
-            # Drop helper column
             df.drop(columns=["base"], inplace=True)
             print(f"✅ Merged length info for {df['length'].notna().sum()} images.")
         except Exception as e:
             print(f"⚠️ Could not merge length info: {e}")
             df["length"] = None
 
-        return df, df["path"].tolist()
+        # ✅ Randomize order of paths (preserve once per session)
+        if "random_paths" not in st.session_state or st.session_state.get("last_folder") != selected_folder:
+            paths = df["path"].tolist()
+            random.shuffle(paths)
+            st.session_state["random_paths"] = paths
+            st.session_state["last_folder"] = selected_folder
+            print("🔀 Shuffled image order for this folder.")
+        else:
+            paths = st.session_state["random_paths"]
+
+        return df, paths
 
     # ---------------------------
     # Case 2: CSV-based loading (labeled)
@@ -266,14 +271,22 @@ def load_image_list(selected_folder=None):
         st.error("CSV must include a 'path' column.")
         return pd.DataFrame({"path": []}), []
 
-    # Drop empty paths
     df = df.dropna(subset=["path"]).reset_index(drop=True)
 
-    # Assign labeled source if not already present
     if "source" not in df.columns:
         df["source"] = "labeled"
 
-    return df, df["path"].tolist()
+    # ✅ Also shuffle labeled paths for fairness
+    if "random_paths" not in st.session_state or st.session_state.get("last_folder") != "labeled":
+        paths = df["path"].tolist()
+        random.shuffle(paths)
+        st.session_state["random_paths"] = paths
+        st.session_state["last_folder"] = "labeled"
+        print("🔀 Shuffled labeled image order.")
+    else:
+        paths = st.session_state["random_paths"]
+
+    return df, paths)
 
 # -----------------------------
 # Baseline (Original Model Results)
