@@ -196,7 +196,7 @@ def load_image_list(selected_folder=None):
 
         if not image_paths:
             st.warning(f"No images found in {prefix}")
-            return pd.DataFrame(columns=["path", "source"]), []
+            return pd.DataFrame(columns=["path", "source", "length"]), []
 
         # Create DataFrame and mark all as 'unlabeled'
         df = pd.DataFrame({
