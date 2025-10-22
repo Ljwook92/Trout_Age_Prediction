@@ -887,22 +887,22 @@ with right:
 # 📊 Evaluate Fine-Tuned Model (labeled dataset only)
 # ----------------------------------------------------
 st.divider()
-st.subheader("🔍 Evaluate Fine-Tuned Model (Labeled Dataset)")
+#st.subheader("🔍 Evaluate Fine-Tuned Model (Labeled Dataset)")
 
-if st.button("Run Evaluation"):
-    with st.spinner("Evaluating fine-tuned model on labeled data..."):
-        df_full, _ = load_image_list()
-        eval_result, err = evaluate_model(model, transform, df_full, con=con)
-        
-        if err:
-            st.error(err)
-        else:
-            st.success(f"✅ Evaluation complete — Accuracy: {eval_result['accuracy']:.3f}, Macro F1: {eval_result['macro_f1']:.3f}")
-            st.dataframe(
-                pd.DataFrame(eval_result["report"]).transpose().round(3),
-                use_container_width=True
-            )
-            st.caption("☁️ Results uploaded to: `simCLR_endtoend/eval_logs/evaluation.json`")
+#if st.button("Run Evaluation"):
+#    with st.spinner("Evaluating fine-tuned model on labeled data..."):
+#        df_full, _ = load_image_list()
+#        eval_result, err = evaluate_model(model, transform, df_full, con=con)
+#        
+#        if err:
+#            st.error(err)
+#        else:
+#            st.success(f"✅ Evaluation complete — Accuracy: {eval_result['accuracy']:.3f}, Macro F1: {eval_result['macro_f1']:.3f}")
+#            st.dataframe(
+#                pd.DataFrame(eval_result["report"]).transpose().round(3),
+#                use_container_width=True
+#            )
+#            st.caption("☁️ Results uploaded to: `simCLR_endtoend/eval_logs/evaluation.json`")
 
 # Always show feedback table (no checkbox)
 st.subheader("Saved Feedback")
