@@ -71,11 +71,11 @@ def load_model():
     Load model in the following order:
     1) Latest fine-tuned checkpoint: simCLR_endtoend/backbone_head_v{N}.pth
     2) Baseline checkpoint: simCLR_endtoend/backbone_head.pth
-    3) Original backbone + head (first-time fallback)
-    
+    3) Original classifier head (first-time fallback)
+
     The backbone is always frozen; only the classifier head is fine-tuned in the app.
     """
-    global CURRENT_MODEL_VERSION  # ✅ ensure updates persist across reloads
+    global CURRENT_MODEL_VERSION  # ✅ persist version across reloads
     set_seed(100)
     client, bucket = get_gcs_client()
 
@@ -96,19 +96,9 @@ def load_model():
     latest_ckpt_key = get_latest_checkpoint_key(bucket)
     baseline_ckpt_key = "simCLR_endtoend/backbone_head.pth"
 
-    # ---------- Download and build backbone ----------
-    backbone_path = os.path.join(tempfile.gettempdir(), "backbone_resnet18_simclr2.pth")
-    if not os.path.exists(backbone_path):
-        print("📥 Downloading backbone...")
-        r = requests.get(
-            "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/backbone_resnet18_simclr2.pth"
-        )
-        r.raise_for_status()
-        with open(backbone_path, "wb") as f:
-            f.write(r.content)
-
-    base_backbone = torch.load(backbone_path, map_location=DEVICE, weights_only=False)
-    backbone = nn.Sequential(base_backbone, nn.Flatten()).to(DEVICE)
+    # ---------- Build backbone (no external backbone download) ----------
+    print("🧩 Using backbone directly from baseline/fine-tuned checkpoint.")
+    backbone = nn.Sequential(nn.Identity(), nn.Flatten()).to(DEVICE)
 
     # ---------- Build classifier head ----------
     classifier_head = nn.Sequential(
@@ -139,8 +129,8 @@ def load_model():
         print(f"🔹 Loaded baseline checkpoint: {CURRENT_MODEL_VERSION}")
 
     else:
-        # Case 3) Fallback to initial head
-        print("⚪ No checkpoints found — using original backbone + head.pth")
+        # Case 3) Fallback to initial head only
+        print("⚪ No checkpoints found — using original classifier_head.pth only.")
         head_url = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth"
         head_path = os.path.join(tempfile.gettempdir(), "classifier_head.pth")
         if not os.path.exists(head_path):
@@ -173,7 +163,6 @@ def load_model():
     # ---------- Display current model version ----------
     print(f"✅ Loaded model version: {CURRENT_MODEL_VERSION}")
 
-    # Use Streamlit sidebar to display live-updating version info
     st.sidebar.markdown(
         f"<div style='padding:6px; background-color:#f5f5f5; border-radius:8px;'>"
         f"<b>Current Model Version:</b> <code>{CURRENT_MODEL_VERSION}</code>"
