@@ -700,12 +700,10 @@ st.sidebar.markdown(
     **Total Dataset:** 16,221  
     **Labeled Dataset:** 1,393  
     **Unlabeled Dataset:** 14,828  
-    **Test Dataset:** 2,118
-    **Train Dataset:** 14,103
+    **Test Dataset:** 2,118  
+    **Train Dataset:** 14,103  
     """
 )
-
-import pandas as pd
 
 # Evaluation Example
 selected_eval = {
