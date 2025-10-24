@@ -695,11 +695,11 @@ FOLDER_SCAN = f"trout_scale_images/troutscales_newimages0825/{selected_folder}/"
 st.sidebar.markdown(f"**Current Folder:** `{FOLDER_SCAN}`")
 
 st.sidebar.header("Dataset Details")
-st.sidebar.markdown(
-    """
-#    **Total Dataset:** 16,221  
 #    **Labeled Dataset:** 1,393  
 #    **Unlabeled Dataset:** 14,828  
+st.sidebar.markdown(
+    """
+    **Total Dataset:** 16,221  
     **Test Dataset:** 2,118  
     **Train Dataset:** 14,103  
     """
