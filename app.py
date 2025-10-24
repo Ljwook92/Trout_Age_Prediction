@@ -700,7 +700,6 @@ st.sidebar.markdown(
     **Total Dataset:** 16,221  
     **Labeled Dataset:** 1,393  
     **Unlabeled Dataset:** 14,828  
-
     **Test Dataset:** 2,118
     **Train Dataset:** 14,103
     """
@@ -779,7 +778,7 @@ if st.session_state.get(folder_key) != selected_folder:
     random.shuffle(paths_all)
     st.session_state[rand_key] = paths_all
     st.session_state[folder_key] = selected_folder
-    st.session_state.idx = 0  # 폴더 바뀌면 처음부터
+    st.session_state.idx = 0  
 
 if rand_key not in st.session_state:
     paths_all = df["path"].tolist()
