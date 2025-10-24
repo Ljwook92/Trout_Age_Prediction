@@ -33,7 +33,7 @@ bucket_name = st.secrets["gcp"]["bucket_name"]
 bucket = client.bucket(bucket_name)
 
 DB_PATH = os.path.join(tempfile.gettempdir(), "feedback.db")   
-CSV_PATH = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/final_results.csv"  
+CSV_PATH = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/streamlib.csv"  
 
 FOLDER_SCAN = None               
 NUM_CLASSES = 7
@@ -214,7 +214,7 @@ def load_image_list(selected_folder=None):
         # Create base dataframe
         df = pd.DataFrame({
             "path": image_paths,
-            "source": "unlabeled"
+            "streamlit": 1
         })
 
         # ✅ Merge length info from CSV_PATH (by filename)
@@ -662,7 +662,7 @@ st.sidebar.header("Settings")
 user_name = st.sidebar.text_input("User (optional)", value="expert")
 
 # Force 'unlabeled' mode (no sidebar select)
-source_filter = "unlabeled"
+source_filter = 1
 st.sidebar.info("Evaluate unlabeled data only")
 
 if "last_filter" not in st.session_state or st.session_state.last_filter != source_filter:
