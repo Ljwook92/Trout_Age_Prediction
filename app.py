@@ -66,7 +66,6 @@ def get_next_model_version(bucket):
 # Model Loading (user-provided)
 # -----------------------------
 @st.cache_resource(show_spinner=False)
-@st.cache_resource(show_spinner=False)
 def load_model():
     """
     Load model in the following order:
@@ -97,10 +96,12 @@ def load_model():
 
     # ---------- Build backbone and head (same structure as training) ----------
     from torchvision import models
-    print("🧩 Building ResNet18 backbone (fc = Identity) — consistent with saved checkpoints.")
-    backbone = models.resnet18()
-    backbone.fc = nn.Identity()  # remove classification layer
-    backbone = backbone.to(DEVICE)
+    print("🧩 Building Sequential-wrapped ResNet18 backbone (matches saved checkpoint).")
+
+    # ✅ 핵심 수정 부분
+    base_backbone = models.resnet18()
+    base_backbone.fc = nn.Identity()
+    backbone = nn.Sequential(base_backbone).to(DEVICE)  # wrap inside Sequential
 
     classifier_head = nn.Sequential(
         nn.Linear(512, 128),
@@ -113,7 +114,7 @@ def load_model():
         tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(latest_ckpt_key))
         bucket.blob(latest_ckpt_key).download_to_filename(tmp_path)
         ckpt = torch.load(tmp_path, map_location=DEVICE)
-        backbone.load_state_dict(ckpt["backbone_state_dict"])
+        backbone.load_state_dict(ckpt["backbone_state_dict"], strict=False)
         classifier_head.load_state_dict(ckpt["head_state_dict"])
         CURRENT_MODEL_VERSION = os.path.basename(latest_ckpt_key)
         print(f"🔹 Loaded fine-tuned checkpoint: {CURRENT_MODEL_VERSION}")
@@ -122,7 +123,7 @@ def load_model():
         tmp_path = os.path.join(tempfile.gettempdir(), "backbone_head.pth")
         bucket.blob(baseline_ckpt_key).download_to_filename(tmp_path)
         ckpt = torch.load(tmp_path, map_location=DEVICE)
-        backbone.load_state_dict(ckpt["backbone_state_dict"])
+        backbone.load_state_dict(ckpt["backbone_state_dict"], strict=False)
         classifier_head.load_state_dict(ckpt["head_state_dict"])
         CURRENT_MODEL_VERSION = os.path.basename(baseline_ckpt_key)
         print(f"🔹 Loaded baseline checkpoint: {CURRENT_MODEL_VERSION}")
