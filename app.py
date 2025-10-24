@@ -66,20 +66,19 @@ def get_next_model_version(bucket):
 # Model Loading (user-provided)
 # -----------------------------
 @st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def load_model():
     """
     Load model in the following order:
     1) Latest fine-tuned checkpoint: simCLR_endtoend/backbone_head_v{N}.pth
     2) Baseline checkpoint: simCLR_endtoend/backbone_head.pth
-    3) Original classifier head (first-time fallback)
-
-    The backbone is always frozen; only the classifier head is fine-tuned in the app.
+    3) Original classifier head only (first-time fallback)
     """
-    global CURRENT_MODEL_VERSION  # ✅ persist version across reloads
+    global CURRENT_MODEL_VERSION
     set_seed(100)
     client, bucket = get_gcs_client()
 
-    # ---------- Helper: find the latest vN checkpoint ----------
+    # ---------- Helper: find latest vN checkpoint ----------
     def get_latest_checkpoint_key(bucket):
         blobs = list(bucket.list_blobs(prefix="simCLR_endtoend/backbone_head_v"))
         versions = []
@@ -96,20 +95,21 @@ def load_model():
     latest_ckpt_key = get_latest_checkpoint_key(bucket)
     baseline_ckpt_key = "simCLR_endtoend/backbone_head.pth"
 
-    # ---------- Build backbone (no external backbone download) ----------
-    print("🧩 Using backbone directly from baseline/fine-tuned checkpoint.")
-    backbone = nn.Sequential(nn.Identity(), nn.Flatten()).to(DEVICE)
+    # ---------- Build backbone and head (same structure as training) ----------
+    from torchvision import models
+    print("🧩 Building ResNet18 backbone (fc = Identity) — consistent with saved checkpoints.")
+    backbone = models.resnet18()
+    backbone.fc = nn.Identity()  # remove classification layer
+    backbone = backbone.to(DEVICE)
 
-    # ---------- Build classifier head ----------
     classifier_head = nn.Sequential(
         nn.Linear(512, 128),
         nn.ReLU(),
         nn.Linear(128, NUM_CLASSES)
     ).to(DEVICE)
 
-    # ---------- Load weights ----------
+    # ---------- Load checkpoint ----------
     if latest_ckpt_key is not None:
-        # Case 1) Latest fine-tuned checkpoint
         tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(latest_ckpt_key))
         bucket.blob(latest_ckpt_key).download_to_filename(tmp_path)
         ckpt = torch.load(tmp_path, map_location=DEVICE)
@@ -119,7 +119,6 @@ def load_model():
         print(f"🔹 Loaded fine-tuned checkpoint: {CURRENT_MODEL_VERSION}")
 
     elif bucket.blob(baseline_ckpt_key).exists(client):
-        # Case 2) Baseline model
         tmp_path = os.path.join(tempfile.gettempdir(), "backbone_head.pth")
         bucket.blob(baseline_ckpt_key).download_to_filename(tmp_path)
         ckpt = torch.load(tmp_path, map_location=DEVICE)
@@ -129,8 +128,8 @@ def load_model():
         print(f"🔹 Loaded baseline checkpoint: {CURRENT_MODEL_VERSION}")
 
     else:
-        # Case 3) Fallback to initial head only
-        print("⚪ No checkpoints found — using original classifier_head.pth only.")
+        # ---------- fallback ----------
+        print("⚪ No checkpoints found — using original classifier_head only.")
         head_url = "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/classifier_head.pth"
         head_path = os.path.join(tempfile.gettempdir(), "classifier_head.pth")
         if not os.path.exists(head_path):
@@ -142,15 +141,15 @@ def load_model():
         classifier_head.load_state_dict(state_dict)
         CURRENT_MODEL_VERSION = "classifier_head_original.pth"
 
-    # ---------- Freeze backbone (fine-tune head only) ----------
+    # ---------- Freeze backbone ----------
     for p in backbone.parameters():
         p.requires_grad = False
 
-    # ---------- Combine backbone and head ----------
+    # ---------- Combine ----------
     model = nn.Sequential(backbone, classifier_head).to(DEVICE)
     model.eval()
 
-    # ---------- Define preprocessing ----------
+    # ---------- Transform ----------
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -160,9 +159,8 @@ def load_model():
         )
     ])
 
-    # ---------- Display current model version ----------
+    # ---------- Sidebar ----------
     print(f"✅ Loaded model version: {CURRENT_MODEL_VERSION}")
-
     st.sidebar.markdown(
         f"<div style='padding:6px; background-color:#f5f5f5; border-radius:8px;'>"
         f"<b>Current Model Version:</b> <code>{CURRENT_MODEL_VERSION}</code>"
