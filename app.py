@@ -794,8 +794,7 @@ fb_df = fetch_all_feedback(con)
 # 폴더별 인덱스가 없으면 0으로 초기화
 if idx_key not in st.session_state:
     st.session_state[idx_key] = 0
-
-# 🔹 자동 복원 로직 (DB 기반)
+    
 if "initialized" not in st.session_state or st.session_state.get("last_folder_idx") != selected_folder:
     st.session_state.initialized = True
     st.session_state["last_folder_idx"] = selected_folder
@@ -818,14 +817,13 @@ if "initialized" not in st.session_state or st.session_state.get("last_folder_id
             except StopIteration:
                 st.session_state[idx_key] = 0
 
-# 현재 인덱스 로드
 st.session_state.idx = st.session_state[idx_key]
 
 # Read the last feedback from the database (shared/common)
 fb_df = fetch_all_feedback(con)
 
-if filter_key not in st.session_state:
-    st.session_state[filter_key] = 0  # 기본값
+if idx_key not in st.session_state:
+    st.session_state[idx_key] = 0  
 
 # 🔹 Automatic restoration based on the feedback database.
 if "initialized" not in st.session_state:
@@ -845,12 +843,12 @@ if "initialized" not in st.session_state:
                     i for i, p in enumerate(paths)
                     if os.path.basename(str(p)) == last_base
                 )
-                st.session_state[filter_key] = min(last_idx + 1, len(paths) - 1)
+                st.session_state[idx_key] = min(last_idx + 1, len(paths) - 1)
             except StopIteration:
-                st.session_state[filter_key] = 0
+                st.session_state[idx_key] = 0
 
 # 🔹 Load the index corresponding to the current filter.
-st.session_state.idx = st.session_state.get(filter_key, 0)
+st.session_state.idx = st.session_state.get(idx_key, 0)
 
 # Handle empty set
 if len(paths) == 0:
@@ -1013,14 +1011,14 @@ with right:
                 # 🔹 Move to next image
                 time.sleep(0.1)
                 st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
-                st.session_state.idx = st.session_state[idx_key]
+                st.session_state[idx_key] = st.session_state.idx
                 st.rerun()
 
     # ➡️ Skip
     with cols[2]:
         if st.button("Skip ➡️"):
             st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
-            st.session_state.idx = st.session_state[idx_key]
+            st.session_state[idx_key] = st.session_state.idx
             st.rerun()
             
 # ----------------------------------------------------
