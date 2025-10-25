@@ -1010,29 +1010,36 @@ with right:
                 cur = con.cursor()
                 cur.execute("SELECT COUNT(*) FROM feedback WHERE is_correct=0 AND correct_label IS NOT NULL")
                 feedback_count = cur.fetchone()[0]
-
+                
                 # 🔸 Fine-tune after every 20 incorrect feedbacks
                 if feedback_count % 20 == 0 and feedback_count > 0:
-                    st.info(f"🧠 Fine-tuning triggered automatically (feedbacks: {feedback_count})")
-                    msg = fine_tune_on_feedback(model, transform, con)
-                    st.caption(msg)
+                    # 🧠 Prevent duplicate fine-tuning for same count
+                    if "last_finetune_count" not in st.session_state:
+                        st.session_state.last_finetune_count = 0
 
-                    # ✅ Move to next image BEFORE rerun
-                    st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
-                    st.session_state.idx = st.session_state[idx_key]
+                    if st.session_state.last_finetune_count != feedback_count:
+                        st.session_state.last_finetune_count = feedback_count  # record latest fine-tune
 
+                        st.info(f"🧠 Fine-tuning triggered automatically (feedbacks: {feedback_count})")
+                        msg = fine_tune_on_feedback(model, transform, con)
+                        st.caption(msg)
 
-                    # ✅ After fine-tuning: reset cache + reload new model
-                    st.cache_resource.clear()
-                    model, transform, CURRENT_MODEL_VERSION = load_model()
-                    st.sidebar.success(f"🔄 Reloaded model version: {CURRENT_MODEL_VERSION}")
+                        # ✅ Move to next image BEFORE rerun
+                        st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
+                        st.session_state.idx = st.session_state[idx_key]
 
-                    # ✅ Force rerun to refresh sidebar and model state
-                    st.rerun()
+                        # ✅ After fine-tuning: reset cache + reload new model
+                        st.cache_resource.clear()
+                        model, transform, CURRENT_MODEL_VERSION = load_model()
+                        st.sidebar.success(f"🔄 Reloaded model version: {CURRENT_MODEL_VERSION}")
 
+                        # ✅ Force rerun to refresh sidebar and model state
+                        st.rerun()
+                    else:
+                        st.caption("⏸️ Fine-tuning already done for this batch — waiting for new feedbacks.")
                 else:
                     st.caption(f"Waiting for next fine-tuning... ({feedback_count % 20}/20 accumulated)")
-
+                
                 # 🔹 Move to next image
                 time.sleep(0.1)
                 st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
