@@ -975,8 +975,8 @@ with right:
                 upsert_feedback(
                     con,
                     img_path=img_path,
-                    pred_label=int(pred_label) if source_val != "labeled" else int(true_label),
-                    pred_prob=float(pred_prob) if source_val != "labeled" else 1.0,
+                    pred_label=int(pred_label),
+                    pred_prob=float(pred_prob) if pred_prob is not None else 1.0,
                     is_correct=is_correct,
                     correct_label=final_correct,
                     user=user_name
