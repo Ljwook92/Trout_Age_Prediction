@@ -98,7 +98,7 @@ def load_model():
     from torchvision import models
     print("🧩 Building Sequential-wrapped ResNet18 backbone (matches saved checkpoint).")
 
-    # ✅ 핵심 수정 부분
+    
     base_backbone = models.resnet18()
     base_backbone.fc = nn.Identity()
     backbone = nn.Sequential(base_backbone).to(DEVICE)  # wrap inside Sequential
@@ -213,8 +213,7 @@ def load_image_list(selected_folder=None):
 
         # Create base dataframe
         df = pd.DataFrame({
-            "path": image_paths,
-            "streamlit": 1
+            "path": image_paths
         })
 
         # ✅ Merge length info from CSV_PATH (by filename)
@@ -255,6 +254,13 @@ def load_image_list(selected_folder=None):
     else:
         st.error("CSV path does not exist.")
         return pd.DataFrame({"path": []}), []
+
+    if "streamlit" in df.columns:
+        df = df[df['streamlit'] == 1].reset_index(drop = True)
+        print(f"Loaded only streamlit == 1 images: {len(df)} rows")
+
+    else:
+        print("No 'streamlit' column found in CSV; loading all images.")
 
     # Validate structure
     if "path" not in df.columns:
