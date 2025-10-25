@@ -856,7 +856,7 @@ try:
     progress_text = (
         f"📁 {selected_folder} | "
         f"{st.session_state.idx + 1} / {total_in_folder} images "
-        f"(streamlit==1: {filtered_in_folder})"
+        f"(Including testset: {filtered_in_folder})"
     )
 
     # 진행률 바 출력
