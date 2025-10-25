@@ -862,24 +862,21 @@ st.session_state.idx = max(0, min(st.session_state.idx, len(paths)-1))
 # 📊 Progress Bar 
 # -----------------------------
 try:
-    # ✅ streamlit == 1 이미지 수 (현재 필터링된 df 기준)
+    # ✅ streamlit == 1 
     filtered_in_folder = len(paths)
-
-    # ✅ 폴더 내 전체 이미지 중 streamlit==1인 개수 (CSV 기준)
+    
     df_ref = pd.read_csv(CSV_PATH, usecols=["path", "streamlit"])
     df_ref = df_ref[df_ref["path"].str.contains(selected_folder, na=False)]
     total_in_folder = len(df_ref[df_ref["streamlit"] == 1])
 
-    # 진행률 텍스트
     progress_text = (
         f"📁 {selected_folder} | "
         f"{st.session_state[idx_key] + 1} / {total_in_folder} images"
         f"(Including testset: {filtered_in_folder})"
     )
 
-    # 진행률 바 출력
     st.progress(
-        (st.session_state.idx + 1) / filtered_in_folder,
+        (st.session_state[idx_key] + 1) / filtered_in_folder,
         text=progress_text
     )
 except Exception as e:
@@ -1011,14 +1008,14 @@ with right:
                 # 🔹 Move to next image
                 time.sleep(0.1)
                 st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
-                st.session_state[idx_key] = st.session_state.idx
+                st.session_state.idx = st.session_state[idx_key]
                 st.rerun()
 
     # ➡️ Skip
     with cols[2]:
         if st.button("Skip ➡️"):
             st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
-            st.session_state[idx_key] = st.session_state.idx
+            st.session_state.idx = st.session_state[idx_key]
             st.rerun()
             
 # ----------------------------------------------------
