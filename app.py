@@ -215,18 +215,24 @@ def load_image_list(selected_folder=None):
         df = pd.DataFrame({
             "path": image_paths
         })
+        df["base"] = df["path"].apply(lambda x: os.path.basename(str(x)))
 
         # ✅ Merge length info from CSV_PATH (by filename)
         try:
-            df_len = pd.read_csv(CSV_PATH, usecols=["path", "length"])
-            df_len["base"] = df_len["path"].apply(lambda x: os.path.basename(str(x)))
-            df["base"] = df["path"].apply(lambda x: os.path.basename(str(x)))
-            df = df.merge(df_len[["base", "length"]], on="base", how="left")
-            df.drop(columns=["base"], inplace=True)
-            print(f"✅ Merged length info for {df['length'].notna().sum()} images.")
+            df_ref = pd.read_csv(CSV_PATH, usecols = ["path", "streamlit", "length", "source"])
+            df_ref["base"] = df_ref["path"].apply(lambda x: os.path.basename(str(x)))
+
+            df = df.merge(df_ref[["base", "streamlit", "lenght", "source"]], on = "base", how ="left")
+
+            before = len(df)
+            df = df[df["streamlit"] == 1].reset_index(drop = True)
+            print(f"Filtered training + unlabeled: {before} -> {len(df)}")
+
         except Exception as e:
-            print(f"⚠️ Could not merge length info: {e}")
+            print(f"Could not merge or filter by streamlit: {e}")
             df["length"] = None
+            df["streamlit"] = 1
+
 
         # ✅ Randomize order of paths (preserve once per session)
         if "random_paths" not in st.session_state or st.session_state.get("last_folder") != selected_folder:
