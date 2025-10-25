@@ -705,8 +705,6 @@ selected_folder = st.sidebar.selectbox("Choose a subfolder", available_folders)
 # Set FOLDER_SCAN dynamically
 FOLDER_SCAN = f"trout_scale_images/troutscales_newimages0825/{selected_folder}/"
 
-# Display selected folder path
-st.sidebar.markdown(f"**Current Folder:** `{FOLDER_SCAN}`")
 
 st.sidebar.header("Dataset Details")
 #    **Labeled Dataset:** 1,393  
