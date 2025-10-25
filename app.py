@@ -871,8 +871,8 @@ try:
 
     progress_text = (
         f"📁 {selected_folder} | "
-        f"{st.session_state[idx_key] + 1} / {total_in_folder} images"
-        f"(Including testset: {filtered_in_folder})"
+        f"{st.session_state[idx_key] + 1} / {filtered_in_folder} images"
+        f"(Including testset: {total_in_folder})"
     )
 
     st.progress(
