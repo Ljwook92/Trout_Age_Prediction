@@ -369,6 +369,22 @@ def init_db():
 
     # 🔹 Ensure the schema includes model_version
     cur = con.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            img_path TEXT UNIQUE,
+            pred_label INTEGER,
+            pred_prob REAL,
+            is_correct INTEGER,
+            correct_label INTEGER,
+            user TEXT,
+            ts TEXT,
+            model_version TEXT
+        )
+    """)
+    con.commit()
+    print("✅ Verified or created feedback table (safe guard).")
+
     cur.execute("PRAGMA table_info(feedback);")
     cols = [row[1] for row in cur.fetchall()]
     if "model_version" not in cols:
