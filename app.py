@@ -213,7 +213,9 @@ def load_image_list(selected_folder=None):
 
         # Create base dataframe
         df = pd.DataFrame({
-            "path": image_paths
+            "path": image_paths,
+            "source": None.
+            "length": None
         })
         df["base"] = df["path"].apply(lambda x: os.path.basename(str(x)))
 
@@ -744,13 +746,6 @@ df_compare = pd.DataFrame({
     selected_eval["version"]: eval_vals
 })
 
-# 
-# st.sidebar.subheader("Model Comparison")
-#st.sidebar.dataframe(
-#    df_compare.style.format(subset=["Original", selected_eval["version"]], formatter="{:.3f}"),
-#    use_container_width=True
-#)
-
 # Load model/data/db
 model, transform, CURRENT_MODEL_VERSION = load_model()
 df, paths = load_image_list(selected_folder=selected_folder)
@@ -775,7 +770,6 @@ ensure_model_version_column(con)
 # 🔹 Apply filter (don't overwrite paths here)
 if source_filter != "all" and "source" in df.columns:
     df = df[df["source"].str.lower() == source_filter.lower()].reset_index(drop=True)
-    # ❌ DO NOT: paths = df["path"].tolist()
 
 # 🔀 Shuffle AFTER filtering, once per folder
 import random
