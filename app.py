@@ -1017,6 +1017,11 @@ with right:
                     msg = fine_tune_on_feedback(model, transform, con)
                     st.caption(msg)
 
+                    # ✅ Move to next image BEFORE rerun
+                    st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
+                    st.session_state.idx = st.session_state[idx_key]
+
+
                     # ✅ After fine-tuning: reset cache + reload new model
                     st.cache_resource.clear()
                     model, transform, CURRENT_MODEL_VERSION = load_model()
