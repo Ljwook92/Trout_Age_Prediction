@@ -767,10 +767,6 @@ def ensure_model_version_column(con):
 # ✅ Add this line
 ensure_model_version_column(con)
 
-# 🔹 Apply filter (don't overwrite paths here)
-if source_filter != "all" and "source" in df.columns:
-    df = df[df["source"].str.lower() == source_filter.lower()].reset_index(drop=True)
-
 # 🔀 Shuffle AFTER filtering, once per folder
 import random
 
