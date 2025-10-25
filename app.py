@@ -841,7 +841,7 @@ if len(paths) == 0:
 st.session_state.idx = max(0, min(st.session_state.idx, len(paths)-1))
 
 # -----------------------------
-# 📊 Progress Bar (streamlit==1 filtered)
+# 📊 Progress Bar 
 # -----------------------------
 try:
     # ✅ streamlit == 1 이미지 수 (현재 필터링된 df 기준)
@@ -855,8 +855,8 @@ try:
     # 진행률 텍스트
     progress_text = (
         f"📁 {selected_folder} | "
-        f"{st.session_state.idx + 1} / {filtered_in_folder} images "
-        f"(streamlit==1: {total_in_folder})"
+        f"{st.session_state.idx + 1} / {total_in_folder} images "
+        f"(streamlit==1: {filtered_in_folder})"
     )
 
     # 진행률 바 출력
