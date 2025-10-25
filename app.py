@@ -841,22 +841,22 @@ if len(paths) == 0:
 st.session_state.idx = max(0, min(st.session_state.idx, len(paths)-1))
 
 # -----------------------------
-# 📊 Progress Bar (folder-aware, streamlit filter applied)
+# 📊 Progress Bar (streamlit==1 filtered)
 # -----------------------------
 try:
-    # 폴더 내 전체 이미지 개수
-    prefix = f"troutscales_newimages0825/{selected_folder}/"
-    all_blobs = list(bucket.list_blobs(prefix=prefix))
-    total_in_folder = len([b for b in all_blobs if b.name.lower().endswith((".png", ".jpg", ".jpeg"))])
-
-    # 현재 표시 중인 streamlit == 1 이미지 수
+    # ✅ streamlit == 1 이미지 수 (현재 필터링된 df 기준)
     filtered_in_folder = len(paths)
+
+    # ✅ 폴더 내 전체 이미지 중 streamlit==1인 개수 (CSV 기준)
+    df_ref = pd.read_csv(CSV_PATH, usecols=["path", "streamlit"])
+    df_ref = df_ref[df_ref["path"].str.contains(selected_folder, na=False)]
+    total_in_folder = len(df_ref[df_ref["streamlit"] == 1])
 
     # 진행률 텍스트
     progress_text = (
         f"📁 {selected_folder} | "
         f"{st.session_state.idx + 1} / {filtered_in_folder} images "
-        f"(including test: {total_in_folder})"
+        f"(streamlit==1: {total_in_folder})"
     )
 
     # 진행률 바 출력
