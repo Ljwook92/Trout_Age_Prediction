@@ -867,13 +867,20 @@ try:
     
     df_ref = pd.read_csv(CSV_PATH, usecols=["path", "streamlit"])
     df_ref = df_ref[df_ref["path"].str.contains(selected_folder, na=False)]
-    total_in_folder = len(df_ref[df_ref["streamlit"] == 1])
+    total_in_folder = len(df_ref)
 
-    progress_text = (
-        f"📁 {selected_folder} | "
-        f"{st.session_state[idx_key] + 1} / {filtered_in_folder} images"
-        f"(Including testset: {total_in_folder})"
-    )
+    if total_in_folder == filtered_in_folder:
+        progress_text = (
+            f"📁 {selected_folder} | "
+            f"{st.session_state[idx_key] + 1} / {filtered_in_folder} images "
+            f"(No testset found)"
+        )
+    else:
+        progress_text = (
+            f"📁 {selected_folder} | "
+            f"{st.session_state[idx_key] + 1} / {filtered_in_folder} images"
+            f"(Including testset: {total_in_folder})"
+        )
 
     st.progress(
         (st.session_state[idx_key] + 1) / filtered_in_folder,
