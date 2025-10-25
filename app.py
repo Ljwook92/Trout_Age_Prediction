@@ -784,8 +784,42 @@ if rand_key not in st.session_state:
 paths = st.session_state[rand_key]
 
 # ✅ Resume from last feedback per source_filter
-# Set state key by source type.
-filter_key = f"idx_{source_filter}"
+# ✅ Resume from last feedback per folder (instead of global)
+# 폴더별 index 키를 별도로 유지
+idx_key = f"idx_{selected_folder}"
+
+# 데이터베이스에서 이전 피드백 불러오기
+fb_df = fetch_all_feedback(con)
+
+# 폴더별 인덱스가 없으면 0으로 초기화
+if idx_key not in st.session_state:
+    st.session_state[idx_key] = 0
+
+# 🔹 자동 복원 로직 (DB 기반)
+if "initialized" not in st.session_state or st.session_state.get("last_folder_idx") != selected_folder:
+    st.session_state.initialized = True
+    st.session_state["last_folder_idx"] = selected_folder
+
+    if not fb_df.empty and len(paths) > 0:
+        current_basenames = {os.path.basename(str(p)) for p in paths}
+
+        fb_df = fb_df.copy()
+        fb_df["base"] = fb_df["img_path"].apply(lambda x: os.path.basename(str(x)))
+        fb_match = fb_df[fb_df["base"].isin(current_basenames)]
+
+        if not fb_match.empty:
+            last_base = fb_match.iloc[0]["base"]
+            try:
+                last_idx = next(
+                    i for i, p in enumerate(paths)
+                    if os.path.basename(str(p)) == last_base
+                )
+                st.session_state[idx_key] = min(last_idx + 1, len(paths) - 1)
+            except StopIteration:
+                st.session_state[idx_key] = 0
+
+# 현재 인덱스 로드
+st.session_state.idx = st.session_state[idx_key]
 
 # Read the last feedback from the database (shared/common)
 fb_df = fetch_all_feedback(con)
@@ -841,7 +875,7 @@ try:
     # 진행률 텍스트
     progress_text = (
         f"📁 {selected_folder} | "
-        f"{st.session_state.idx + 1} / {total_in_folder} images "
+        f"{st.session_state[idx_key] + 1} / {total_in_folder} images"
         f"(Including testset: {filtered_in_folder})"
     )
 
@@ -929,8 +963,8 @@ with right:
     # ⬅️ Previous
     with cols[0]:
         if st.button("⬅️ Previous"):
-            st.session_state.idx = max(0, st.session_state.idx - 1)
-            st.session_state[f"idx_{source_filter}"] = st.session_state.idx
+            st.session_state[idx_key] = max(0, st.session_state[idx_key] - 1)
+            st.session_state.idx = st.session_state[idx_key]
             st.rerun()
 
     # ✅ Save & Next
@@ -978,15 +1012,15 @@ with right:
 
                 # 🔹 Move to next image
                 time.sleep(0.1)
-                st.session_state.idx = min(len(paths) - 1, st.session_state.idx + 1)
-                st.session_state[f"idx_{source_filter}"] = st.session_state.idx
+                st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
+                st.session_state.idx = st.session_state[idx_key]
                 st.rerun()
 
     # ➡️ Skip
     with cols[2]:
         if st.button("Skip ➡️"):
-            st.session_state.idx = min(len(paths) - 1, st.session_state.idx + 1)
-            st.session_state[f"idx_{source_filter}"] = st.session_state.idx
+            st.session_state[idx_key] = min(len(paths) - 1, st.session_state[idx_key] + 1)
+            st.session_state.idx = st.session_state[idx_key]
             st.rerun()
             
 # ----------------------------------------------------
