@@ -214,7 +214,7 @@ def load_image_list(selected_folder=None):
         # Create base dataframe
         df = pd.DataFrame({
             "path": image_paths,
-            "source": None.
+            "source": None,
             "length": None
         })
         df["base"] = df["path"].apply(lambda x: os.path.basename(str(x)))
