@@ -839,9 +839,35 @@ if len(paths) == 0:
 
 # Clamp index
 st.session_state.idx = max(0, min(st.session_state.idx, len(paths)-1))
+# -----------------------------
+# 📊 Progress Bar (enhanced version)
+# -----------------------------
+try:
+    # 전체 데이터 수 (CSV 기준)
+    df_total = pd.read_csv(CSV_PATH)
+    total_all = len(df_total)
 
-# Progress
-st.progress((st.session_state.idx + 1) / len(paths), text=f"{st.session_state.idx+1} / {len(paths)}")
+    # streamlit == 1로 필터링된 이미지 수
+    if "streamlit" in df_total.columns:
+        total_filtered = len(df_total[df_total["streamlit"] == 1])
+    else:
+        total_filtered = len(df)
+
+    # 현재 폴더명
+    current_folder = selected_folder
+
+    # 진행 텍스트
+    progress_text = (
+        f"📁 {current_folder} | "
+        f"{st.session_state.idx + 1} / {len(paths)} images "
+        f"(including test: {total_all:,})"
+    )
+
+    # 진행 바 표시
+    st.progress((st.session_state.idx + 1) / len(paths), text=progress_text)
+except Exception as e:
+    st.progress((st.session_state.idx + 1) / len(paths), text=f"{st.session_state.idx+1} / {len(paths)}")
+    print(f"⚠️ Progress bar info failed: {e}")
 
 # Current image
 img_path = paths[st.session_state.idx]
