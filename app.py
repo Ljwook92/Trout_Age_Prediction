@@ -224,7 +224,7 @@ def load_image_list(selected_folder=None):
             df_ref = pd.read_csv(CSV_PATH, usecols = ["path", "streamlit", "length", "source"])
             df_ref["base"] = df_ref["path"].apply(lambda x: os.path.basename(str(x)))
 
-            df = df.merge(df_ref[["base", "streamlit", "lenght", "source"]], on = "base", how ="left")
+            df = df.merge(df_ref[["base", "streamlit", "length", "source"]], on = "base", how ="left")
 
             before = len(df)
             df = df[df["streamlit"] == 1].reset_index(drop = True)
@@ -277,8 +277,8 @@ def load_image_list(selected_folder=None):
 
     df = df.dropna(subset=["path"]).reset_index(drop=True)
 
-    if "source" not in df.columns:
-        df["source"] = "labeled"
+#    if "source" not in df.columns:
+#        df["source"] = "labeled"
 
     # ✅ Also shuffle labeled paths for fairness
     if "random_paths" not in st.session_state or st.session_state.get("last_folder") != "labeled":
