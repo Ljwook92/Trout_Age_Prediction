@@ -801,13 +801,12 @@ paths = st.session_state[rand_key]
 
 # ✅ Resume from last feedback per source_filter
 # ✅ Resume from last feedback per folder (instead of global)
-# 폴더별 index 키를 별도로 유지
+
 idx_key = f"idx_{selected_folder}"
 
-# 데이터베이스에서 이전 피드백 불러오기
 fb_df = fetch_all_feedback(con)
 
-# 폴더별 인덱스가 없으면 0으로 초기화
+
 if idx_key not in st.session_state:
     st.session_state[idx_key] = 0
     
