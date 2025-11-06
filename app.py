@@ -342,7 +342,7 @@ def init_db():
             print("🗑️ Deleted old local feedback.db cache.")
 
         print("⚪ No feedback.db found in GCS. Creating new one...")
-        con = sqlite3.connect(tmp_path)
+        con = sqlite3.connect(tmp_path, check_same_thread=False, timeout=10)
         cur = con.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS feedback (
