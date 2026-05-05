@@ -38,14 +38,18 @@ os.makedirs(LOCAL_DATA_DIR, exist_ok=True)
 os.makedirs(LOCAL_MODEL_DIR, exist_ok=True)
 
 DB_PATH = os.getenv("TROUT_DB_PATH", os.path.join(LOCAL_DATA_DIR, "feedback.db"))
-CSV_PATH = os.getenv(
-    "TROUT_CSV_PATH",
+REVIEW_CSV_PATH = os.getenv(
+    "TROUT_REVIEW_CSV_PATH",
+    os.getenv("TROUT_CSV_PATH",
     "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/streamlib.csv"
+    )
 )
+CSV_PATH = REVIEW_CSV_PATH
 BASELINE_CKPT_PATH = os.getenv("TROUT_BASELINE_CKPT", os.path.join(LOCAL_MODEL_DIR, "backbone_head.pth"))
 METRICS_PATH = os.getenv("TROUT_METRICS_PATH", os.path.join(LOCAL_DATA_DIR, "model_metrics.json"))
 EVAL_LOG_PATH = os.getenv("TROUT_EVAL_LOG_PATH", os.path.join(LOCAL_DATA_DIR, "evaluation_log.jsonl"))
-VALIDATION_CSV_PATH = os.getenv("TROUT_VALIDATION_CSV_PATH", CSV_PATH)
+VALIDATION_CSV_PATH = os.getenv("TROUT_VALIDATION_CSV_PATH", REVIEW_CSV_PATH)
+TEST_CSV_PATH = os.getenv("TROUT_TEST_CSV_PATH", "")
 
 FOLDER_SCAN = None               
 NUM_CLASSES = 7
@@ -197,8 +201,8 @@ def load_image_list(selected_folder=None):
     Load images either from a CSV file or directly from a GCS folder.
 
     - If `selected_folder` is provided, images are listed from that folder (unlabeled mode)
-      and 'length' info is merged from CSV_PATH based on filename.
-    - If not provided, images are loaded directly from CSV_PATH (labeled mode).
+      and 'length' info is merged from REVIEW_CSV_PATH based on filename.
+    - If not provided, images are loaded directly from REVIEW_CSV_PATH.
     """
     client, bucket = get_gcs_client()
 
@@ -207,7 +211,7 @@ def load_image_list(selected_folder=None):
     # ---------------------------
     if selected_folder:
         try:
-            df_ref = pd.read_csv(CSV_PATH, usecols = ["path", "streamlit", "length", "source"])
+            df_ref = pd.read_csv(REVIEW_CSV_PATH, usecols = ["path", "streamlit", "length", "source"])
             df = df_ref[df_ref["path"].astype(str).str.contains(selected_folder, na=False)].copy()
             before = len(df)
             df = df[df["streamlit"] == 1].reset_index(drop = True)
@@ -249,14 +253,14 @@ def load_image_list(selected_folder=None):
     # ---------------------------
     # Case 2: CSV-based loading (labeled)
     # ---------------------------
-    if CSV_PATH.startswith("http"):
-        r = requests.get(CSV_PATH)
+    if REVIEW_CSV_PATH.startswith("http"):
+        r = requests.get(REVIEW_CSV_PATH)
         if r.status_code != 200:
             st.error(f"Failed to fetch CSV file: {r.status_code}")
             return pd.DataFrame({"path": []}), []
         df = pd.read_csv(io.StringIO(r.text))
-    elif os.path.exists(CSV_PATH):
-        df = pd.read_csv(CSV_PATH)
+    elif os.path.exists(REVIEW_CSV_PATH):
+        df = pd.read_csv(REVIEW_CSV_PATH)
     else:
         st.error("CSV path does not exist.")
         return pd.DataFrame({"path": []}), []
@@ -534,7 +538,7 @@ def adjust_image_contrast(img, factor):
 
 
 def load_fixed_validation_df():
-    """Load a stable labeled validation/test set from CSV."""
+    """Load a stable labeled validation set used for model selection."""
     if VALIDATION_CSV_PATH.startswith("http"):
         df = pd.read_csv(VALIDATION_CSV_PATH)
     else:
@@ -620,6 +624,32 @@ def append_eval_log(metrics, accepted, reason):
     record["decision_reason"] = reason
     with open(EVAL_LOG_PATH, "a") as f:
         f.write(json.dumps(record) + "\n")
+
+
+def load_eval_history():
+    if not os.path.exists(EVAL_LOG_PATH):
+        return pd.DataFrame()
+
+    records = []
+    with open(EVAL_LOG_PATH, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if not records:
+        return pd.DataFrame()
+
+    df_hist = pd.DataFrame(records)
+    df_hist["run"] = range(1, len(df_hist) + 1)
+    for col in ["macro_f1", "accuracy"]:
+        if col in df_hist.columns:
+            df_hist[col] = pd.to_numeric(df_hist[col], errors="coerce")
+    return df_hist
 
 
 def candidate_improved(candidate, previous):
@@ -1008,21 +1038,21 @@ try:
     # ✅ streamlit == 1 
     filtered_in_folder = len(paths)
     
-    df_ref = pd.read_csv(CSV_PATH, usecols=["path", "streamlit"])
+    df_ref = pd.read_csv(REVIEW_CSV_PATH, usecols=["path", "streamlit"])
     df_ref = df_ref[df_ref["path"].str.contains(selected_folder, na=False)]
-    total_in_folder = len(df_ref)
+    total_in_folder = len(df_ref[df_ref["streamlit"] == 1])
 
     if total_in_folder == filtered_in_folder:
         progress_text = (
             f"📁 {selected_folder} | "
             f"{st.session_state[idx_key] + 1} / {filtered_in_folder} images "
-            f"(No testset found)"
+            f"(Review set only)"
         )
     else:
         progress_text = (
             f"📁 {selected_folder} | "
             f"{st.session_state[idx_key] + 1} / {filtered_in_folder} images"
-            f"(Including testset: {total_in_folder})"
+            f"(Review rows in CSV: {total_in_folder})"
         )
 
     st.progress(
@@ -1232,3 +1262,28 @@ st.download_button(
     file_name="feedback_export.csv",
     mime="text/csv"
 )
+
+st.subheader("Model Performance")
+eval_history = load_eval_history()
+
+if eval_history.empty:
+    st.caption("No validation history yet. A chart will appear after the first 20-feedback update is evaluated.")
+else:
+    chart_df = eval_history[["run", "macro_f1", "accuracy"]].dropna(how="all", subset=["macro_f1", "accuracy"])
+    st.line_chart(
+        chart_df.set_index("run"),
+        y=["macro_f1", "accuracy"],
+        use_container_width=True
+    )
+
+    display_cols = [
+        col for col in [
+            "run", "model_version", "accepted", "macro_f1", "accuracy",
+            "evaluated_rows", "skipped", "decision_reason"
+        ]
+        if col in eval_history.columns
+    ]
+    st.dataframe(
+        eval_history[display_cols].sort_values("run", ascending=False),
+        use_container_width=True
+    )
