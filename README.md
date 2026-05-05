@@ -19,3 +19,14 @@ streamlit run app.py
 ```
 
 If `TROUT_VALIDATION_CSV_PATH` is not set, the app falls back to `TROUT_REVIEW_CSV_PATH` and uses `source == "labeled"` plus `streamlit == 0` rows when available. For clean evaluation, prefer a separate validation CSV.
+
+Optional online-update controls:
+
+```bash
+export TROUT_FEEDBACK_TRIGGER=20
+export TROUT_BACKBONE_UNFREEZE_FEEDBACK_THRESHOLD=300
+export TROUT_MIN_FEEDBACK_PER_CLASS_FOR_UNFREEZE=20
+export TROUT_VALIDATION_BOOTSTRAPS=200
+```
+
+The app always keeps `test.csv` out of the feedback and model-selection loop. Use it only for a final offline report.

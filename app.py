@@ -12,12 +12,13 @@ import tempfile
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image, ImageEnhance
 from torchvision import transforms
-from sklearn.metrics import classification_report, accuracy_score, f1_score
+from sklearn.metrics import classification_report, accuracy_score, f1_score, confusion_matrix
 
 try:
     from google.cloud import storage
@@ -56,6 +57,10 @@ NUM_CLASSES = 7
 LABEL_NAMES = ["0+", "1+", "2+", "3+", "4+", "5+", "Bad"]
 FEEDBACK_TRIGGER = int(os.getenv("TROUT_FEEDBACK_TRIGGER", "20"))
 IMPROVEMENT_TOL = float(os.getenv("TROUT_IMPROVEMENT_TOL", "0.0001"))
+VALIDATION_BOOTSTRAPS = int(os.getenv("TROUT_VALIDATION_BOOTSTRAPS", "200"))
+BACKBONE_UNFREEZE_FEEDBACK_THRESHOLD = int(os.getenv("TROUT_BACKBONE_UNFREEZE_FEEDBACK_THRESHOLD", "300"))
+MIN_FEEDBACK_PER_CLASS_FOR_UNFREEZE = int(os.getenv("TROUT_MIN_FEEDBACK_PER_CLASS_FOR_UNFREEZE", "20"))
+BACKBONE_LR = float(os.getenv("TROUT_BACKBONE_LR", "1e-5"))
 
 # DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEVICE = torch.device("cpu")
@@ -585,6 +590,8 @@ def evaluate_on_fixed_validation(model, transform, model_version):
         raise ValueError("Validation failed: no images could be evaluated.")
 
     labels = list(range(NUM_CLASSES))
+    y_true_arr = np.array(y_true)
+    y_pred_arr = np.array(y_pred)
     report = classification_report(
         y_true,
         y_pred,
@@ -593,15 +600,38 @@ def evaluate_on_fixed_validation(model, transform, model_version):
         output_dict=True,
         zero_division=0
     )
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    macro_f1 = f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)
+    rng = np.random.default_rng(100)
+    boot_scores = []
+    if len(y_true_arr) > 1 and VALIDATION_BOOTSTRAPS > 0:
+        for _ in range(VALIDATION_BOOTSTRAPS):
+            idx = rng.integers(0, len(y_true_arr), len(y_true_arr))
+            boot_scores.append(
+                f1_score(
+                    y_true_arr[idx],
+                    y_pred_arr[idx],
+                    labels=labels,
+                    average="macro",
+                    zero_division=0
+                )
+            )
+    if boot_scores:
+        ci_low, ci_high = np.quantile(boot_scores, [0.025, 0.975])
+    else:
+        ci_low = ci_high = macro_f1
     result = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "model_version": model_version,
         "validation_rows": len(df_val),
         "evaluated_rows": len(y_true),
         "skipped": skipped,
-        "accuracy": accuracy_score(y_true, y_pred),
-        "macro_f1": f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0),
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "macro_f1": float(macro_f1),
+        "macro_f1_ci_low": float(ci_low),
+        "macro_f1_ci_high": float(ci_high),
         "class_f1": {name: report[name]["f1-score"] for name in LABEL_NAMES},
+        "confusion_matrix": cm.tolist(),
     }
     return result
 
@@ -646,7 +676,7 @@ def load_eval_history():
 
     df_hist = pd.DataFrame(records)
     df_hist["run"] = range(1, len(df_hist) + 1)
-    for col in ["macro_f1", "accuracy"]:
+    for col in ["macro_f1", "accuracy", "macro_f1_ci_low", "macro_f1_ci_high"]:
         if col in df_hist.columns:
             df_hist[col] = pd.to_numeric(df_hist[col], errors="coerce")
     return df_hist
@@ -677,6 +707,89 @@ def candidate_improved(candidate, previous):
             return True, "class F1 improved without lowering any tracked class"
 
     return False, f"no validation improvement over macro F1 {prev_macro:.4f}"
+
+
+def feedback_class_counts(con):
+    df_counts = pd.read_sql_query(
+        """
+        SELECT correct_label, COUNT(*) AS n
+        FROM feedback
+        WHERE is_correct IS NOT NULL
+          AND correct_label IS NOT NULL
+        GROUP BY correct_label
+        """,
+        con
+    )
+    counts = {i: 0 for i in range(NUM_CLASSES)}
+    for _, row in df_counts.iterrows():
+        label = int(row["correct_label"])
+        if label in counts:
+            counts[label] = int(row["n"])
+    return counts
+
+
+def feedback_balance_table(con):
+    counts = feedback_class_counts(con)
+    rows = []
+    max_count = max(counts.values()) if counts else 0
+    for label_idx, label_name in enumerate(LABEL_NAMES):
+        count = counts.get(label_idx, 0)
+        rows.append({
+            "Label": label_name,
+            "Feedback": count,
+            "Needed for backbone": max(0, MIN_FEEDBACK_PER_CLASS_FOR_UNFREEZE - count),
+            "Underrepresented": count < max_count * 0.5 if max_count > 0 else False,
+        })
+    return pd.DataFrame(rows)
+
+
+def validation_distribution_table():
+    try:
+        df_val = load_fixed_validation_df()
+    except Exception:
+        return pd.DataFrame()
+
+    rows = []
+    for label_idx, label_name in enumerate(LABEL_NAMES):
+        rows.append({
+            "Label": label_name,
+            "Validation": int((df_val["label"].astype(int) == label_idx).sum())
+        })
+    return pd.DataFrame(rows)
+
+
+def should_unfreeze_backbone(con):
+    counts = feedback_class_counts(con)
+    total = sum(counts.values())
+    min_class_count = min(counts.values()) if counts else 0
+    ready = (
+        total >= BACKBONE_UNFREEZE_FEEDBACK_THRESHOLD
+        and min_class_count >= MIN_FEEDBACK_PER_CLASS_FOR_UNFREEZE
+    )
+    reason = (
+        f"{total}/{BACKBONE_UNFREEZE_FEEDBACK_THRESHOLD} total feedback, "
+        f"min class {min_class_count}/{MIN_FEEDBACK_PER_CLASS_FOR_UNFREEZE}"
+    )
+    return ready, reason
+
+
+def set_last_resnet_block_trainable(backbone, trainable):
+    base = backbone[0] if isinstance(backbone, nn.Sequential) else backbone
+    if not hasattr(base, "layer4"):
+        return []
+    params = list(base.layer4.parameters())
+    for p in params:
+        p.requires_grad = trainable
+    return params
+
+
+def class_weight_tensor(labels):
+    counts = np.bincount(labels, minlength=NUM_CLASSES).astype(float)
+    weights = np.zeros(NUM_CLASSES, dtype=np.float32)
+    nonzero = counts > 0
+    if nonzero.any():
+        weights[nonzero] = len(labels) / (nonzero.sum() * counts[nonzero])
+    return torch.tensor(weights, dtype=torch.float32, device=DEVICE)
 
 
 def fine_tune_on_feedback(model, transform, con,
@@ -744,10 +857,12 @@ def fine_tune_on_feedback(model, transform, con,
 
     X = torch.stack(x_list).to(device)
     y = torch.tensor(y_list).to(device)
+    y_np = np.array(y_list, dtype=int)
 
     backbone, classifier_head = model[0], model[1]
     previous_version = CURRENT_MODEL_VERSION
     previous_head_state = copy.deepcopy(classifier_head.state_dict())
+    previous_backbone_state = copy.deepcopy(backbone.state_dict())
 
     previous_metrics = load_best_metrics()
     if previous_metrics is None:
@@ -758,18 +873,29 @@ def fine_tune_on_feedback(model, transform, con,
         except Exception as e:
             return f"Validation baseline failed; model was not updated. {e}"
 
-    backbone.eval()
+    unfreeze_backbone, unfreeze_reason = should_unfreeze_backbone(con)
+    backbone_params = set_last_resnet_block_trainable(backbone, unfreeze_backbone)
+    if unfreeze_backbone:
+        backbone.train()
+    else:
+        backbone.eval()
     classifier_head.train()
-    optimizer = torch.optim.Adam(classifier_head.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss()
+    optimizer_groups = [{"params": classifier_head.parameters(), "lr": lr}]
+    if unfreeze_backbone and backbone_params:
+        optimizer_groups.append({"params": backbone_params, "lr": BACKBONE_LR})
+    optimizer = torch.optim.Adam(optimizer_groups)
+    criterion = nn.CrossEntropyLoss(weight=class_weight_tensor(y_np))
 
     for epoch in range(epochs):
         total_loss = 0
         for i in range(0, len(X), batch_size):
             xb, yb = X[i:i+batch_size], y[i:i+batch_size]
             optimizer.zero_grad()
-            with torch.no_grad():
-                feats = backbone(xb)  # no gradient for backbone
+            if unfreeze_backbone:
+                feats = backbone(xb)
+            else:
+                with torch.no_grad():
+                    feats = backbone(xb)
             logits = classifier_head(feats)
             loss = criterion(logits, yb)
             loss.backward()
@@ -784,6 +910,8 @@ def fine_tune_on_feedback(model, transform, con,
         candidate_metrics = evaluate_on_fixed_validation(model, transform, new_name)
     except Exception as e:
         classifier_head.load_state_dict(previous_head_state)
+        backbone.load_state_dict(previous_backbone_state)
+        set_last_resnet_block_trainable(backbone, False)
         model.eval()
         return f"Candidate validation failed; restored {previous_version}. {e}"
 
@@ -792,6 +920,8 @@ def fine_tune_on_feedback(model, transform, con,
 
     if not accepted:
         classifier_head.load_state_dict(previous_head_state)
+        backbone.load_state_dict(previous_backbone_state)
+        set_last_resnet_block_trainable(backbone, False)
         model.eval()
         print(f"Rejected candidate {new_name}: {reason}")
         return (
@@ -804,6 +934,8 @@ def fine_tune_on_feedback(model, transform, con,
         "head_state_dict": classifier_head.state_dict()
     }, ckpt_path)
     candidate_metrics["checkpoint_path"] = ckpt_path
+    candidate_metrics["backbone_unfrozen"] = bool(unfreeze_backbone)
+    candidate_metrics["unfreeze_reason"] = unfreeze_reason
     save_best_metrics(candidate_metrics)
     CURRENT_MODEL_VERSION = new_name
 
@@ -827,12 +959,14 @@ def fine_tune_on_feedback(model, transform, con,
         WHERE is_correct IS NULL
     """)
     con.commit()
+    set_last_resnet_block_trainable(backbone, False)
     model.eval()
 
     print(f"Accepted candidate {new_name}: {reason}. Saved locally as {ckpt_path}.")
     return (
         f"Accepted {new_name}: {reason}. "
-        f"Saved head-only update ({len(df_batch)} new + {len(df_replay)} replay)."
+        f"Saved {'head + layer4' if unfreeze_backbone else 'head-only'} update "
+        f"({len(df_batch)} new + {len(df_replay)} replay)."
     )
 
 # -----------------------------
@@ -849,34 +983,13 @@ user_name = st.sidebar.text_input("User (optional)", value="expert")
 
 # Force 'unlabeled' mode (no sidebar select)
 source_filter = 1
-st.sidebar.info("Evaluate unlabeled data only")
+st.sidebar.info("Review queue is loaded automatically from review.csv")
 
 if "last_filter" not in st.session_state or st.session_state.last_filter != source_filter:
     st.session_state.idx = 0
     st.session_state.last_filter = source_filter
 
 #show_feedback_table = st.sidebar.checkbox("Show feedback table")
-
-# -----------------------------
-# Image Folder Selection
-# -----------------------------
-st.sidebar.subheader("Select Image Folder")
-
-# Available subfolders in GCS
-available_folders = [
-    "cu1images", "cu2images", "cu3images", "cu4images",
-    "du1images", "du2images", "du3images", "du4images",
-    "po1images", "po2images", "po3images", "po4images",
-    "to1images", "to2images", "to3images", "to4images",
-    "tu1images", "tu2images", "tu3images", "tu4images"
-]
-
-# Dropdown to choose the folder
-selected_folder = st.sidebar.selectbox("Choose a subfolder", available_folders)
-
-# Set FOLDER_SCAN dynamically
-FOLDER_SCAN = f"trout_scale_images/troutscales_newimages0825/{selected_folder}/"
-
 
 st.sidebar.header("Dataset Details")
 #    **Labeled Dataset:** 1,393  
@@ -918,7 +1031,7 @@ df_compare = pd.DataFrame({
 
 # Load model/data/db
 model, transform, CURRENT_MODEL_VERSION = load_model()
-df, paths = load_image_list(selected_folder=selected_folder)
+df, paths = load_image_list()
 con = init_db()
 
 # Ensure model_version column exists (for version-aware cache)
@@ -937,17 +1050,32 @@ def ensure_model_version_column(con):
 # ✅ Add this line
 ensure_model_version_column(con)
 
-# 🔀 Shuffle AFTER filtering, once per folder
+st.sidebar.subheader("Feedback Balance")
+balance_df = feedback_balance_table(con)
+st.sidebar.dataframe(balance_df, use_container_width=True, hide_index=True)
+ready_unfreeze, unfreeze_status = should_unfreeze_backbone(con)
+if ready_unfreeze:
+    st.sidebar.success(f"Backbone layer4 updates enabled: {unfreeze_status}")
+else:
+    st.sidebar.caption(f"Backbone layer4 stays frozen: {unfreeze_status}")
+
+val_dist_df = validation_distribution_table()
+if not val_dist_df.empty:
+    st.sidebar.subheader("Validation Balance")
+    st.sidebar.dataframe(val_dist_df, use_container_width=True, hide_index=True)
+
+# 🔀 Shuffle AFTER filtering, once for the review queue
 import random
 
-rand_key = f"random_paths_{selected_folder}"
-folder_key = "last_folder"
+rand_key = "random_paths_review"
+folder_key = "last_review_queue"
+review_queue_id = REVIEW_CSV_PATH
 
-if st.session_state.get(folder_key) != selected_folder:
+if st.session_state.get(folder_key) != review_queue_id:
     paths_all = df["path"].tolist()
     random.shuffle(paths_all)
     st.session_state[rand_key] = paths_all
-    st.session_state[folder_key] = selected_folder
+    st.session_state[folder_key] = review_queue_id
     st.session_state.idx = 0  
 
 if rand_key not in st.session_state:
@@ -957,10 +1085,8 @@ if rand_key not in st.session_state:
 
 paths = st.session_state[rand_key]
 
-# ✅ Resume from last feedback per source_filter
-# ✅ Resume from last feedback per folder (instead of global)
-
-idx_key = f"idx_{selected_folder}"
+# ✅ Resume from last feedback in the review queue
+idx_key = "idx_review"
 
 fb_df = fetch_all_feedback(con)
 
@@ -968,9 +1094,9 @@ fb_df = fetch_all_feedback(con)
 if idx_key not in st.session_state:
     st.session_state[idx_key] = 0
     
-if "initialized" not in st.session_state or st.session_state.get("last_folder_idx") != selected_folder:
+if "initialized" not in st.session_state or st.session_state.get("last_queue_idx") != review_queue_id:
     st.session_state.initialized = True
-    st.session_state["last_folder_idx"] = selected_folder
+    st.session_state["last_queue_idx"] = review_queue_id
 
     if not fb_df.empty and len(paths) > 0:
         current_basenames = {os.path.basename(str(p)) for p in paths}
@@ -1035,28 +1161,11 @@ st.session_state.idx = max(0, min(st.session_state.idx, len(paths)-1))
 # 📊 Progress Bar 
 # -----------------------------
 try:
-    # ✅ streamlit == 1 
-    filtered_in_folder = len(paths)
-    
-    df_ref = pd.read_csv(REVIEW_CSV_PATH, usecols=["path", "streamlit"])
-    df_ref = df_ref[df_ref["path"].str.contains(selected_folder, na=False)]
-    total_in_folder = len(df_ref[df_ref["streamlit"] == 1])
-
-    if total_in_folder == filtered_in_folder:
-        progress_text = (
-            f"📁 {selected_folder} | "
-            f"{st.session_state[idx_key] + 1} / {filtered_in_folder} images "
-            f"(Review set only)"
-        )
-    else:
-        progress_text = (
-            f"📁 {selected_folder} | "
-            f"{st.session_state[idx_key] + 1} / {filtered_in_folder} images"
-            f"(Review rows in CSV: {total_in_folder})"
-        )
+    filtered_review = len(paths)
+    progress_text = f"Review queue | {st.session_state[idx_key] + 1} / {filtered_review} images"
 
     st.progress(
-        (st.session_state[idx_key] + 1) / filtered_in_folder,
+        (st.session_state[idx_key] + 1) / filtered_review,
         text=progress_text
     )
 except Exception as e:
@@ -1279,6 +1388,7 @@ else:
     display_cols = [
         col for col in [
             "run", "model_version", "accepted", "macro_f1", "accuracy",
+            "macro_f1_ci_low", "macro_f1_ci_high",
             "evaluated_rows", "skipped", "decision_reason"
         ]
         if col in eval_history.columns
@@ -1287,3 +1397,14 @@ else:
         eval_history[display_cols].sort_values("run", ascending=False),
         use_container_width=True
     )
+
+    latest_with_cm = eval_history[eval_history["confusion_matrix"].notna()] if "confusion_matrix" in eval_history.columns else pd.DataFrame()
+    if not latest_with_cm.empty:
+        latest_row = latest_with_cm.iloc[-1]
+        cm_df = pd.DataFrame(
+            latest_row["confusion_matrix"],
+            index=[f"True {name}" for name in LABEL_NAMES],
+            columns=[f"Pred {name}" for name in LABEL_NAMES]
+        )
+        st.caption(f"Latest validation confusion matrix: {latest_row.get('model_version', '')}")
+        st.dataframe(cm_df, use_container_width=True)
