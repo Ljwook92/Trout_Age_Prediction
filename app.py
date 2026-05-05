@@ -1000,6 +1000,18 @@ user_name = st.sidebar.text_input("User (optional)", value="expert")
 # Force 'unlabeled' mode (no sidebar select)
 source_filter = 1
 st.sidebar.info("Review queue is loaded automatically from review.csv")
+with st.sidebar.expander("Update rules", expanded=True):
+    st.markdown(
+        f"""
+        - Every **{FEEDBACK_TRIGGER} new expert feedbacks**, the classifier head is fine-tuned.
+        - The candidate model is kept only if validation performance improves.
+        - The SimCLR backbone stays frozen until there are at least
+          **{BACKBONE_UNFREEZE_FEEDBACK_THRESHOLD} total feedbacks** and
+          **{MIN_FEEDBACK_PER_CLASS_FOR_UNFREEZE} feedbacks per class**.
+        - After that threshold, only the last ResNet block (`layer4`) can update.
+        - `test.csv` is reserved for final reporting and is not used here.
+        """
+    )
 
 if "last_filter" not in st.session_state or st.session_state.last_filter != source_filter:
     st.session_state.idx = 0
