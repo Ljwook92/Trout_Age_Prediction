@@ -5,9 +5,8 @@ import sqlite3
 import requests
 from datetime import datetime
 import random
+import copy
 
-from google.cloud import storage
-from google.oauth2 import service_account
 import json
 import tempfile
 
@@ -16,9 +15,16 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageEnhance
 from torchvision import transforms
 from sklearn.metrics import classification_report, accuracy_score, f1_score
+
+try:
+    from google.cloud import storage
+    from google.oauth2 import service_account
+except ModuleNotFoundError:
+    storage = None
+    service_account = None
 
 # -----------------------------
 # Config
@@ -37,11 +43,15 @@ CSV_PATH = os.getenv(
     "https://storage.googleapis.com/trout_scale_images/simCLR_endtoend/streamlib.csv"
 )
 BASELINE_CKPT_PATH = os.getenv("TROUT_BASELINE_CKPT", os.path.join(LOCAL_MODEL_DIR, "backbone_head.pth"))
+METRICS_PATH = os.getenv("TROUT_METRICS_PATH", os.path.join(LOCAL_DATA_DIR, "model_metrics.json"))
+EVAL_LOG_PATH = os.getenv("TROUT_EVAL_LOG_PATH", os.path.join(LOCAL_DATA_DIR, "evaluation_log.jsonl"))
+VALIDATION_CSV_PATH = os.getenv("TROUT_VALIDATION_CSV_PATH", CSV_PATH)
 
 FOLDER_SCAN = None               
 NUM_CLASSES = 7
 LABEL_NAMES = ["0+", "1+", "2+", "3+", "4+", "5+", "Bad"]
 FEEDBACK_TRIGGER = int(os.getenv("TROUT_FEEDBACK_TRIGGER", "20"))
+IMPROVEMENT_TOL = float(os.getenv("TROUT_IMPROVEMENT_TOL", "0.0001"))
 
 # DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DEVICE = torch.device("cpu")
@@ -54,6 +64,11 @@ def get_gcs_client():
     """Return a GCS client only when remote sync is enabled."""
     if LOCAL_MODE:
         return None, None
+    if storage is None or service_account is None:
+        raise RuntimeError(
+            "Google Cloud libraries are not installed. Install google-cloud-storage "
+            "or run with TROUT_LOCAL_MODE=1."
+        )
     creds_dict = json.loads(st.secrets["gcp"]["credentials"])
     credentials = service_account.Credentials.from_service_account_info(creds_dict)
     client = storage.Client(credentials=credentials)
@@ -505,7 +520,6 @@ def evaluate_model(model, transform, df, con=None, upload_to_gcs=True):
 # Online Fine-tuning Function
 # -----------------------------
 import tempfile
-from google.cloud import storage
 
 def load_rgb_image(img_path):
     if str(img_path).startswith("http"):
@@ -513,6 +527,126 @@ def load_rgb_image(img_path):
         r.raise_for_status()
         return Image.open(io.BytesIO(r.content)).convert("RGB")
     return Image.open(img_path).convert("RGB")
+
+
+def adjust_image_contrast(img, factor):
+    return ImageEnhance.Contrast(img).enhance(factor)
+
+
+def load_fixed_validation_df():
+    """Load a stable labeled validation/test set from CSV."""
+    if VALIDATION_CSV_PATH.startswith("http"):
+        df = pd.read_csv(VALIDATION_CSV_PATH)
+    else:
+        df = pd.read_csv(VALIDATION_CSV_PATH)
+
+    required = {"path", "label"}
+    if not required.issubset(df.columns):
+        raise ValueError("Validation CSV must include 'path' and 'label' columns.")
+
+    df = df.dropna(subset=["path", "label"]).copy()
+    if "source" in df.columns:
+        df = df[df["source"].astype(str).str.lower() == "labeled"].copy()
+
+    # Prefer rows excluded from the expert-review/training stream if the split flag exists.
+    if "streamlit" in df.columns and (df["streamlit"] == 0).any():
+        df = df[df["streamlit"] == 0].copy()
+
+    return df.reset_index(drop=True)
+
+
+@torch.no_grad()
+def evaluate_on_fixed_validation(model, transform, model_version):
+    df_val = load_fixed_validation_df()
+    if df_val.empty:
+        raise ValueError("No labeled validation rows found.")
+
+    model.eval()
+    y_true, y_pred = [], []
+    skipped = 0
+
+    for _, row in df_val.iterrows():
+        try:
+            img = load_rgb_image(row["path"])
+            x = transform(img).unsqueeze(0).to(DEVICE)
+            logits = model(x)
+            pred = int(torch.argmax(logits, dim=1).item())
+            y_pred.append(pred)
+            y_true.append(int(row["label"]))
+        except Exception as e:
+            skipped += 1
+            print(f"Validation skipped {row['path']}: {e}")
+
+    if not y_true:
+        raise ValueError("Validation failed: no images could be evaluated.")
+
+    labels = list(range(NUM_CLASSES))
+    report = classification_report(
+        y_true,
+        y_pred,
+        labels=labels,
+        target_names=LABEL_NAMES,
+        output_dict=True,
+        zero_division=0
+    )
+    result = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "model_version": model_version,
+        "validation_rows": len(df_val),
+        "evaluated_rows": len(y_true),
+        "skipped": skipped,
+        "accuracy": accuracy_score(y_true, y_pred),
+        "macro_f1": f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0),
+        "class_f1": {name: report[name]["f1-score"] for name in LABEL_NAMES},
+    }
+    return result
+
+
+def load_best_metrics():
+    if not os.path.exists(METRICS_PATH):
+        return None
+    with open(METRICS_PATH, "r") as f:
+        return json.load(f)
+
+
+def save_best_metrics(metrics):
+    with open(METRICS_PATH, "w") as f:
+        json.dump(metrics, f, indent=2)
+
+
+def append_eval_log(metrics, accepted, reason):
+    record = dict(metrics)
+    record["accepted"] = bool(accepted)
+    record["decision_reason"] = reason
+    with open(EVAL_LOG_PATH, "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def candidate_improved(candidate, previous):
+    if previous is None:
+        return True, "no previous validation metrics"
+
+    cand_macro = float(candidate["macro_f1"])
+    prev_macro = float(previous["macro_f1"])
+    if cand_macro > prev_macro + IMPROVEMENT_TOL:
+        return True, f"macro F1 improved {prev_macro:.4f} -> {cand_macro:.4f}"
+
+    cand_class = candidate.get("class_f1", {})
+    prev_class = previous.get("class_f1", {})
+    common = [name for name in LABEL_NAMES if name in cand_class and name in prev_class]
+    if common:
+        no_class_worse = all(
+            cand_class[name] >= prev_class[name] - IMPROVEMENT_TOL
+            for name in common
+        )
+        any_class_better = any(
+            cand_class[name] > prev_class[name] + IMPROVEMENT_TOL
+            for name in common
+        )
+        if no_class_worse and any_class_better:
+            return True, "class F1 improved without lowering any tracked class"
+
+    return False, f"no validation improvement over macro F1 {prev_macro:.4f}"
 
 
 def fine_tune_on_feedback(model, transform, con,
@@ -526,6 +660,7 @@ def fine_tune_on_feedback(model, transform, con,
     Incorrect feedback is treated as reward -1 and uses the expert label.
     Only the classifier head is updated; the SimCLR backbone remains frozen.
     """
+    global CURRENT_MODEL_VERSION
     device = DEVICE
 
     df_pending = pd.read_sql_query(
@@ -581,6 +716,18 @@ def fine_tune_on_feedback(model, transform, con,
     y = torch.tensor(y_list).to(device)
 
     backbone, classifier_head = model[0], model[1]
+    previous_version = CURRENT_MODEL_VERSION
+    previous_head_state = copy.deepcopy(classifier_head.state_dict())
+
+    previous_metrics = load_best_metrics()
+    if previous_metrics is None:
+        try:
+            previous_metrics = evaluate_on_fixed_validation(model, transform, previous_version)
+            save_best_metrics(previous_metrics)
+            append_eval_log(previous_metrics, accepted=True, reason="initial validation baseline")
+        except Exception as e:
+            return f"Validation baseline failed; model was not updated. {e}"
+
     backbone.eval()
     classifier_head.train()
     optimizer = torch.optim.Adam(classifier_head.parameters(), lr=lr)
@@ -600,13 +747,34 @@ def fine_tune_on_feedback(model, transform, con,
             total_loss += loss.item()
         print(f"Epoch {epoch+1}/{epochs} — Avg Loss: {total_loss / len(X):.4f}")
 
-    global CURRENT_MODEL_VERSION
     ckpt_path = next_local_checkpoint_path()
+    new_name = os.path.basename(ckpt_path)
+
+    try:
+        candidate_metrics = evaluate_on_fixed_validation(model, transform, new_name)
+    except Exception as e:
+        classifier_head.load_state_dict(previous_head_state)
+        model.eval()
+        return f"Candidate validation failed; restored {previous_version}. {e}"
+
+    accepted, reason = candidate_improved(candidate_metrics, previous_metrics)
+    append_eval_log(candidate_metrics, accepted=accepted, reason=reason)
+
+    if not accepted:
+        classifier_head.load_state_dict(previous_head_state)
+        model.eval()
+        print(f"Rejected candidate {new_name}: {reason}")
+        return (
+            f"Candidate rejected: {reason}. "
+            f"Best macro F1 remains {previous_metrics['macro_f1']:.4f}."
+        )
+
     torch.save({
         "backbone_state_dict": backbone.state_dict(),
         "head_state_dict": classifier_head.state_dict()
     }, ckpt_path)
-    new_name = os.path.basename(ckpt_path)
+    candidate_metrics["checkpoint_path"] = ckpt_path
+    save_best_metrics(candidate_metrics)
     CURRENT_MODEL_VERSION = new_name
 
     cur = con.cursor()
@@ -629,9 +797,13 @@ def fine_tune_on_feedback(model, transform, con,
         WHERE is_correct IS NULL
     """)
     con.commit()
+    model.eval()
 
-    print(f"Saved fine-tuned head locally as {ckpt_path}.")
-    return f"Fine-tuned head only and saved as {new_name} ({len(df_batch)} new + {len(df_replay)} replay)."
+    print(f"Accepted candidate {new_name}: {reason}. Saved locally as {ckpt_path}.")
+    return (
+        f"Accepted {new_name}: {reason}. "
+        f"Saved head-only update ({len(df_batch)} new + {len(df_replay)} replay)."
+    )
 
 # -----------------------------
 # Streamlit UI
@@ -869,8 +1041,17 @@ left, right = st.columns([1, 1])
 with left:
     st.subheader("Image")
     st.text(os.path.basename(img_path))
+    contrast_factor = st.slider(
+        "Contrast",
+        min_value=0.2,
+        max_value=3.0,
+        value=1.0,
+        step=0.05,
+        help="Adjusts only the displayed image. Model prediction still uses the original image."
+    )
     try:
-        st.image(img_path)
+        display_img = adjust_image_contrast(load_rgb_image(img_path), contrast_factor)
+        st.image(display_img)
     except Exception as e:
         st.error(f"Cannot display image: {e}")
         
