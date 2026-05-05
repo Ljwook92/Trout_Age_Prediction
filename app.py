@@ -397,6 +397,22 @@ def fetch_all_feedback(con):
     """Read all feedback records"""
     return pd.read_sql_query("SELECT * FROM feedback ORDER BY id DESC", con)
 
+
+def clear_feedback_state(con, clear_models=False):
+    cur = con.cursor()
+    cur.execute("DELETE FROM feedback")
+    cur.execute("DELETE FROM sqlite_sequence WHERE name='feedback'")
+    con.commit()
+
+    for path in [METRICS_PATH, EVAL_LOG_PATH]:
+        if os.path.exists(path):
+            os.remove(path)
+
+    if clear_models:
+        for name in os.listdir(LOCAL_MODEL_DIR):
+            if name.startswith("backbone_head_v") and name.endswith(".pth"):
+                os.remove(os.path.join(LOCAL_MODEL_DIR, name))
+
 # -----------------------------
 # Inference (with caching)
 # -----------------------------
@@ -1063,6 +1079,21 @@ val_dist_df = validation_distribution_table()
 if not val_dist_df.empty:
     st.sidebar.subheader("Validation Balance")
     st.sidebar.dataframe(val_dist_df, use_container_width=True, hide_index=True)
+
+with st.sidebar.expander("Reset feedback"):
+    st.caption("Deletes local feedback and evaluation history. Baseline checkpoint is kept.")
+    reset_text = st.text_input("Type CLEAR to enable reset", key="reset_feedback_text")
+    clear_models = st.checkbox("Also delete accepted fine-tuned model versions", value=False)
+    if st.button("Clear feedback history", disabled=(reset_text != "CLEAR")):
+        clear_feedback_state(con, clear_models=clear_models)
+        st.cache_resource.clear()
+        for key in [
+            "idx_review", "random_paths_review", "last_review_queue",
+            "initialized", "last_queue_idx"
+        ]:
+            st.session_state.pop(key, None)
+        st.sidebar.success("Feedback history cleared.")
+        st.rerun()
 
 # 🔀 Shuffle AFTER filtering, once for the review queue
 import random
