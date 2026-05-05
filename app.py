@@ -69,6 +69,24 @@ CURRENT_MODEL_VERSION = "unloaded"
 # -----------------------------
 # Local/GCS helpers
 # -----------------------------
+@st.cache_data(show_spinner=False, ttl=600)
+def read_csv_cached(path, usecols=None):
+    cols = list(usecols) if usecols is not None else None
+    if str(path).startswith("http"):
+        return pd.read_csv(path, usecols=cols)
+    return pd.read_csv(path, usecols=cols)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def read_image_bytes_cached(img_path):
+    if str(img_path).startswith("http"):
+        r = requests.get(img_path, timeout=30)
+        r.raise_for_status()
+        return r.content
+    with open(img_path, "rb") as f:
+        return f.read()
+
+
 def get_gcs_client():
     """Return a GCS client only when remote sync is enabled."""
     if LOCAL_MODE:
@@ -216,7 +234,7 @@ def load_image_list(selected_folder=None):
     # ---------------------------
     if selected_folder:
         try:
-            df_ref = pd.read_csv(REVIEW_CSV_PATH, usecols = ["path", "streamlit", "length", "source"])
+            df_ref = read_csv_cached(REVIEW_CSV_PATH, usecols=("path", "streamlit", "length", "source"))
             df = df_ref[df_ref["path"].astype(str).str.contains(selected_folder, na=False)].copy()
             before = len(df)
             df = df[df["streamlit"] == 1].reset_index(drop = True)
@@ -258,14 +276,8 @@ def load_image_list(selected_folder=None):
     # ---------------------------
     # Case 2: CSV-based loading (labeled)
     # ---------------------------
-    if REVIEW_CSV_PATH.startswith("http"):
-        r = requests.get(REVIEW_CSV_PATH)
-        if r.status_code != 200:
-            st.error(f"Failed to fetch CSV file: {r.status_code}")
-            return pd.DataFrame({"path": []}), []
-        df = pd.read_csv(io.StringIO(r.text))
-    elif os.path.exists(REVIEW_CSV_PATH):
-        df = pd.read_csv(REVIEW_CSV_PATH)
+    if REVIEW_CSV_PATH.startswith("http") or os.path.exists(REVIEW_CSV_PATH):
+        df = read_csv_cached(REVIEW_CSV_PATH)
     else:
         st.error("CSV path does not exist.")
         return pd.DataFrame({"path": []}), []
@@ -444,12 +456,7 @@ def predict(model, transform, img_path, con=None):
 
     # 🔹 2. Load image (from URL or local path)
     try:
-        if img_path.startswith("http"):
-            r = requests.get(img_path, stream=True)
-            r.raise_for_status()
-            img = Image.open(io.BytesIO(r.content)).convert("RGB")
-        else:
-            img = Image.open(img_path).convert("RGB")
+        img = load_rgb_image(img_path)
     except Exception as e:
         return None, None, f"Image open error: {e}"
 
@@ -547,11 +554,7 @@ def evaluate_model(model, transform, df, con=None, upload_to_gcs=True):
 import tempfile
 
 def load_rgb_image(img_path):
-    if str(img_path).startswith("http"):
-        r = requests.get(img_path, stream=True, timeout=30)
-        r.raise_for_status()
-        return Image.open(io.BytesIO(r.content)).convert("RGB")
-    return Image.open(img_path).convert("RGB")
+    return Image.open(io.BytesIO(read_image_bytes_cached(str(img_path)))).convert("RGB")
 
 
 def adjust_image_contrast(img, factor):
@@ -560,10 +563,7 @@ def adjust_image_contrast(img, factor):
 
 def load_fixed_validation_df():
     """Load a stable labeled validation set used for model selection."""
-    if VALIDATION_CSV_PATH.startswith("http"):
-        df = pd.read_csv(VALIDATION_CSV_PATH)
-    else:
-        df = pd.read_csv(VALIDATION_CSV_PATH)
+    df = read_csv_cached(VALIDATION_CSV_PATH)
 
     required = {"path", "label"}
     if not required.issubset(df.columns):
@@ -838,6 +838,8 @@ def fine_tune_on_feedback(model, transform, con,
         return f"Waiting for more new feedback... ({len(df_pending)}/{batch_trigger})"
 
     df_batch = df_pending.head(batch_trigger).copy()
+    pending_ids = df_batch["id"].astype(int).tolist()
+    placeholders = ",".join("?" for _ in pending_ids)
 
     replay_n = int(len(df_batch) * replay_ratio)
     df_replay = pd.read_sql_query(
@@ -938,6 +940,17 @@ def fine_tune_on_feedback(model, transform, con,
         classifier_head.load_state_dict(previous_head_state)
         backbone.load_state_dict(previous_backbone_state)
         set_last_resnet_block_trainable(backbone, False)
+        cur = con.cursor()
+        cur.execute(
+            f"""
+            UPDATE feedback
+            SET used_in_training = 1,
+                trained_model_version = ?
+            WHERE id IN ({placeholders})
+            """,
+            [f"rejected:{new_name}"] + pending_ids
+        )
+        con.commit()
         model.eval()
         print(f"Rejected candidate {new_name}: {reason}")
         return (
@@ -956,8 +969,6 @@ def fine_tune_on_feedback(model, transform, con,
     CURRENT_MODEL_VERSION = new_name
 
     cur = con.cursor()
-    pending_ids = df_batch["id"].astype(int).tolist()
-    placeholders = ",".join("?" for _ in pending_ids)
     cur.execute(
         f"""
         UPDATE feedback
