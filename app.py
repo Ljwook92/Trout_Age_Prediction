@@ -710,6 +710,44 @@ def load_eval_history():
     return df_hist
 
 
+def build_performance_history(eval_history):
+    """
+    Build chart data that separates tested candidates from the deployed best model.
+
+    Rejected candidates are useful diagnostics, but they should not make the live
+    model look worse. The deployed line only moves when a candidate is accepted.
+    """
+    if eval_history.empty:
+        return pd.DataFrame()
+
+    rows = []
+    best_macro = np.nan
+    best_accuracy = np.nan
+    best_model = ""
+
+    for _, row in eval_history.sort_values("run").iterrows():
+        accepted = bool(row.get("accepted", False))
+        candidate_macro = row.get("macro_f1", np.nan)
+        candidate_accuracy = row.get("accuracy", np.nan)
+
+        if accepted:
+            best_macro = candidate_macro
+            best_accuracy = candidate_accuracy
+            best_model = row.get("model_version", best_model)
+
+        rows.append({
+            "run": int(row["run"]),
+            "candidate_macro_f1": candidate_macro,
+            "candidate_accuracy": candidate_accuracy,
+            "deployed_macro_f1": best_macro,
+            "deployed_accuracy": best_accuracy,
+            "accepted": accepted,
+            "deployed_model": best_model,
+        })
+
+    return pd.DataFrame(rows)
+
+
 def candidate_improved(candidate, previous):
     if previous is None:
         return True, "no previous validation metrics"
@@ -782,6 +820,161 @@ def validation_distribution_table():
         rows.append({
             "Label": label_name,
             "Validation": int((df_val["label"].astype(int) == label_idx).sum())
+        })
+    return pd.DataFrame(rows)
+
+
+def length_class_profile():
+    """Estimate age-class length medians from the fixed labeled validation data."""
+    try:
+        df_val = load_fixed_validation_df()
+    except Exception:
+        return {}
+
+    if "length" not in df_val.columns:
+        return {}
+
+    df_len = df_val.dropna(subset=["label", "length"]).copy()
+    df_len["label"] = pd.to_numeric(df_len["label"], errors="coerce")
+    df_len["length"] = pd.to_numeric(df_len["length"], errors="coerce")
+    df_len = df_len.dropna(subset=["label", "length"])
+    df_len = df_len[df_len["label"].between(0, NUM_CLASSES - 2)]
+
+    profile = {}
+    for label_idx, group in df_len.groupby(df_len["label"].astype(int)):
+        if group.empty:
+            continue
+        profile[int(label_idx)] = {
+            "median": float(group["length"].median()),
+            "q25": float(group["length"].quantile(0.25)),
+            "q75": float(group["length"].quantile(0.75)),
+            "n": int(len(group)),
+        }
+    return profile
+
+
+def infer_length_label(length_value, profile):
+    """Infer a likely age class from length only. This is for queue balancing, not labeling."""
+    if not profile:
+        return None
+    try:
+        length_value = float(length_value)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(length_value):
+        return None
+
+    return min(
+        profile,
+        key=lambda label_idx: abs(length_value - profile[label_idx]["median"])
+    )
+
+
+def reviewed_path_set(con):
+    df_reviewed = pd.read_sql_query(
+        """
+        SELECT img_path
+        FROM feedback
+        WHERE is_correct IS NOT NULL
+        """,
+        con
+    )
+    return set(df_reviewed["img_path"].astype(str).tolist())
+
+
+def build_balanced_review_paths(df_review, con):
+    """
+    Build a review queue that favors underrepresented feedback classes.
+
+    Unlabeled rows do not have true age labels, so this uses fish length as a
+    weak proxy learned from the validation split. Reviewed images are moved to
+    the end so experts mostly see new images.
+    """
+    if df_review.empty or "path" not in df_review.columns:
+        return []
+
+    profile = length_class_profile()
+    counts = feedback_class_counts(con)
+    deficits = {
+        label_idx: max(0, MIN_FEEDBACK_PER_CLASS_FOR_UNFREEZE - counts.get(label_idx, 0))
+        for label_idx in range(NUM_CLASSES)
+    }
+    reviewed = reviewed_path_set(con)
+
+    queue_df = df_review.dropna(subset=["path"]).copy()
+    queue_df["path"] = queue_df["path"].astype(str)
+    queue_df["reviewed"] = queue_df["path"].isin(reviewed)
+    if "length" in queue_df.columns:
+        queue_df["length_num"] = pd.to_numeric(queue_df["length"], errors="coerce")
+    else:
+        queue_df["length_num"] = np.nan
+    queue_df["length_proxy_label"] = queue_df["length_num"].apply(lambda value: infer_length_label(value, profile))
+
+    # Prefer new images. Already-reviewed rows stay available at the end for navigation/export consistency.
+    new_df = queue_df[~queue_df["reviewed"]].copy()
+    done_df = queue_df[queue_df["reviewed"]].copy()
+
+    if new_df.empty:
+        return done_df["path"].tolist()
+
+    rng = np.random.default_rng(100)
+    groups = {}
+    for label_idx in range(NUM_CLASSES):
+        group = new_df[new_df["length_proxy_label"] == label_idx]["path"].tolist()
+        if group:
+            rng.shuffle(group)
+            groups[label_idx] = group
+
+    unknown = new_df[new_df["length_proxy_label"].isna()]["path"].tolist()
+    rng.shuffle(unknown)
+
+    # Classes with fewer feedback examples get more turns in the round-robin queue.
+    label_order = sorted(
+        range(NUM_CLASSES - 1),
+        key=lambda label_idx: (deficits.get(label_idx, 0), label_idx),
+        reverse=True
+    )
+    weighted_order = []
+    for label_idx in label_order:
+        turns = max(1, deficits.get(label_idx, 0))
+        weighted_order.extend([label_idx] * turns)
+    if not weighted_order:
+        weighted_order = label_order
+
+    paths = []
+    while any(groups.values()):
+        progressed = False
+        for label_idx in weighted_order:
+            if groups.get(label_idx):
+                paths.append(groups[label_idx].pop())
+                progressed = True
+        if not progressed:
+            break
+
+    remaining_grouped = set(paths)
+    remaining = [p for p in new_df["path"].tolist() if p not in remaining_grouped and p not in unknown]
+    rng.shuffle(remaining)
+
+    paths.extend(unknown)
+    paths.extend(remaining)
+    paths.extend(done_df["path"].tolist())
+    return paths
+
+
+def length_profile_table():
+    profile = length_class_profile()
+    rows = []
+    for label_idx in range(NUM_CLASSES - 1):
+        values = profile.get(label_idx)
+        if not values:
+            rows.append({"Label": LABEL_NAMES[label_idx], "Median length": None, "Q25": None, "Q75": None, "n": 0})
+            continue
+        rows.append({
+            "Label": LABEL_NAMES[label_idx],
+            "Median length": round(values["median"], 1),
+            "Q25": round(values["q25"], 1),
+            "Q75": round(values["q75"], 1),
+            "n": values["n"],
         })
     return pd.DataFrame(rows)
 
@@ -1115,6 +1308,16 @@ if not val_dist_df.empty:
     st.sidebar.subheader("Validation Balance")
     st.sidebar.dataframe(val_dist_df, use_container_width=True, hide_index=True)
 
+len_profile_df = length_profile_table()
+if not len_profile_df.empty:
+    with st.sidebar.expander("Length-Based Queue"):
+        st.caption(
+            "Unlabeled images are ordered with length as a weak proxy, "
+            "so underrepresented age classes are shown more often. "
+            "This does not assign labels automatically."
+        )
+        st.dataframe(len_profile_df, use_container_width=True, hide_index=True)
+
 with st.sidebar.expander("Reset feedback"):
     st.caption("Deletes local feedback and evaluation history. Baseline checkpoint is kept.")
     reset_text = st.text_input("Type CLEAR to enable reset", key="reset_feedback_text")
@@ -1130,89 +1333,26 @@ with st.sidebar.expander("Reset feedback"):
         st.sidebar.success("Feedback history cleared.")
         st.rerun()
 
-# 🔀 Shuffle AFTER filtering, once for the review queue
-import random
-
 rand_key = "random_paths_review"
 folder_key = "last_review_queue"
-review_queue_id = REVIEW_CSV_PATH
+counts_signature = tuple(sorted(feedback_class_counts(con).items()))
+review_queue_id = f"{REVIEW_CSV_PATH}|{counts_signature}"
 
 if st.session_state.get(folder_key) != review_queue_id:
-    paths_all = df["path"].tolist()
-    random.shuffle(paths_all)
-    st.session_state[rand_key] = paths_all
+    st.session_state[rand_key] = build_balanced_review_paths(df, con)
     st.session_state[folder_key] = review_queue_id
     st.session_state.idx = 0  
+    st.session_state["idx_review"] = 0
 
 if rand_key not in st.session_state:
-    paths_all = df["path"].tolist()
-    random.shuffle(paths_all)
-    st.session_state[rand_key] = paths_all
+    st.session_state[rand_key] = build_balanced_review_paths(df, con)
 
 paths = st.session_state[rand_key]
 
-# ✅ Resume from last feedback in the review queue
 idx_key = "idx_review"
-
-fb_df = fetch_all_feedback(con)
-
-
 if idx_key not in st.session_state:
     st.session_state[idx_key] = 0
-    
-if "initialized" not in st.session_state or st.session_state.get("last_queue_idx") != review_queue_id:
-    st.session_state.initialized = True
-    st.session_state["last_queue_idx"] = review_queue_id
 
-    if not fb_df.empty and len(paths) > 0:
-        current_basenames = {os.path.basename(str(p)) for p in paths}
-
-        fb_df = fb_df.copy()
-        fb_df["base"] = fb_df["img_path"].apply(lambda x: os.path.basename(str(x)))
-        fb_match = fb_df[fb_df["base"].isin(current_basenames)]
-
-        if not fb_match.empty:
-            last_base = fb_match.iloc[0]["base"]
-            try:
-                last_idx = next(
-                    i for i, p in enumerate(paths)
-                    if os.path.basename(str(p)) == last_base
-                )
-                st.session_state[idx_key] = min(last_idx + 1, len(paths) - 1)
-            except StopIteration:
-                st.session_state[idx_key] = 0
-
-st.session_state.idx = st.session_state[idx_key]
-
-# Read the last feedback from the database (shared/common)
-fb_df = fetch_all_feedback(con)
-
-if idx_key not in st.session_state:
-    st.session_state[idx_key] = 0  
-
-# 🔹 Automatic restoration based on the feedback database.
-if "initialized" not in st.session_state:
-    st.session_state.initialized = True
-
-    if not fb_df.empty and len(paths) > 0:
-        current_basenames = {os.path.basename(str(p)) for p in paths}
-
-        fb_df = fb_df.copy()
-        fb_df["base"] = fb_df["img_path"].apply(lambda x: os.path.basename(str(x)))
-        fb_match = fb_df[fb_df["base"].isin(current_basenames)]
-
-        if not fb_match.empty:
-            last_base = fb_match.iloc[0]["base"]
-            try:
-                last_idx = next(
-                    i for i, p in enumerate(paths)
-                    if os.path.basename(str(p)) == last_base
-                )
-                st.session_state[idx_key] = min(last_idx + 1, len(paths) - 1)
-            except StopIteration:
-                st.session_state[idx_key] = 0
-
-# 🔹 Load the index corresponding to the current filter.
 st.session_state.idx = st.session_state.get(idx_key, 0)
 
 # Handle empty set
@@ -1267,6 +1407,8 @@ if "length" in df.columns:
     length_row = df.loc[df["path"] == img_path, "length"]
     if not length_row.empty:
         length_val = length_row.values[0]
+
+length_proxy_label = infer_length_label(length_val, length_class_profile())
         
 source_val = None
 if "source" in df.columns:
@@ -1300,6 +1442,11 @@ with right:
             st.markdown(
                 f"**Predicted:** `{LABEL_NAMES[pred_label]}` | **Prob:** {pred_prob:.4f} | **Length:** {length_val} | **Source:** {source_val}"
             )
+    if length_proxy_label is not None:
+        st.caption(
+            f"Queue hint from length only: likely `{LABEL_NAMES[length_proxy_label]}` candidate. "
+            "This hint is used only to balance expert review."
+        )
 
     # 🔸 Expert Feedback UI
     st.divider()
@@ -1444,12 +1591,44 @@ eval_history = load_eval_history()
 if eval_history.empty:
     st.caption("No validation history yet. A chart will appear after the first 20-feedback update is evaluated.")
 else:
-    chart_df = eval_history[["run", "macro_f1", "accuracy"]].dropna(how="all", subset=["macro_f1", "accuracy"])
+    perf_history = build_performance_history(eval_history)
+    latest_perf = perf_history.iloc[-1]
+    current_best = load_best_metrics()
+
+    if current_best is not None:
+        st.caption(
+            "The deployed model only changes when a candidate is accepted. "
+            f"Current best: {current_best.get('model_version', latest_perf.get('deployed_model', ''))} "
+            f"(macro F1 {float(current_best.get('macro_f1', np.nan)):.4f}, "
+            f"accuracy {float(current_best.get('accuracy', np.nan)):.4f})."
+        )
+    else:
+        st.caption("The deployed model line only changes when a candidate is accepted.")
+
+    deployed_chart = perf_history[["run", "deployed_macro_f1", "deployed_accuracy"]].dropna(
+        how="all",
+        subset=["deployed_macro_f1", "deployed_accuracy"]
+    )
     st.line_chart(
-        chart_df.set_index("run"),
-        y=["macro_f1", "accuracy"],
+        deployed_chart.set_index("run"),
+        y=["deployed_macro_f1", "deployed_accuracy"],
         use_container_width=True
     )
+
+    with st.expander("Candidate validation results", expanded=False):
+        candidate_chart = perf_history[["run", "candidate_macro_f1", "candidate_accuracy"]].dropna(
+            how="all",
+            subset=["candidate_macro_f1", "candidate_accuracy"]
+        )
+        st.line_chart(
+            candidate_chart.set_index("run"),
+            y=["candidate_macro_f1", "candidate_accuracy"],
+            use_container_width=True
+        )
+        st.caption(
+            "Rejected candidates can be lower than the deployed model. "
+            "They are logged for diagnosis, but they are not used for future predictions."
+        )
 
     display_cols = [
         col for col in [
