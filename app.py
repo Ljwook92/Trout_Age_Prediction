@@ -1633,7 +1633,6 @@ else:
     display_cols = [
         col for col in [
             "run", "model_version", "accepted", "macro_f1", "accuracy",
-            "macro_f1_ci_low", "macro_f1_ci_high",
             "evaluated_rows", "skipped", "decision_reason"
         ]
         if col in eval_history.columns
