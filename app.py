@@ -229,6 +229,18 @@ def load_image_list(selected_folder=None):
     """
     client, bucket = get_gcs_client()
 
+    def filter_review_rows(frame):
+        frame = frame.copy()
+        before = len(frame)
+        if "streamlit" in frame.columns:
+            frame = frame[frame["streamlit"] == 1].copy()
+        if "source" in frame.columns:
+            frame = frame[frame["source"].astype(str).str.lower() != "labeled"].copy()
+        if "label" in frame.columns:
+            frame = frame[frame["label"].isna()].copy()
+        print(f"Review rows filtered: {before} -> {len(frame)}")
+        return frame.reset_index(drop=True)
+
     # ---------------------------
     # Case 1: Folder-based loading
     # ---------------------------
@@ -236,9 +248,8 @@ def load_image_list(selected_folder=None):
         try:
             df_ref = read_csv_cached(REVIEW_CSV_PATH, usecols=("path", "streamlit", "length", "source"))
             df = df_ref[df_ref["path"].astype(str).str.contains(selected_folder, na=False)].copy()
-            before = len(df)
-            df = df[df["streamlit"] == 1].reset_index(drop = True)
-            print(f"Loaded {selected_folder} from CSV: {before} -> {len(df)}")
+            df = filter_review_rows(df)
+            print(f"Loaded {selected_folder} review rows: {len(df)}")
         except Exception as e:
             if bucket is None:
                 st.error(f"Could not load folder from CSV in local mode: {e}")
@@ -283,11 +294,12 @@ def load_image_list(selected_folder=None):
         return pd.DataFrame({"path": []}), []
 
     if "streamlit" in df.columns:
-        df = df[df['streamlit'] == 1].reset_index(drop = True)
-        print(f"Loaded only streamlit == 1 images: {len(df)} rows")
+        df = filter_review_rows(df)
+        print(f"Loaded review images: {len(df)} rows")
 
     else:
-        print("No 'streamlit' column found in CSV; loading all images.")
+        df = filter_review_rows(df)
+        print("No 'streamlit' column found in CSV; loading non-labeled rows.")
 
     # Validate structure
     if "path" not in df.columns:
